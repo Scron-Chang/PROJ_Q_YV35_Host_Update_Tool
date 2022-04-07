@@ -101,10 +101,6 @@ uint32_t read_binary(const char *bin_path, uint8_t *buff, uint32_t buff_len) {
     return bin_size;
 }
 
-void dummy_ipmi_raw() {
-    return 0;
-}
-
 int send_recv_command(ipmi_ctx_t ipmi_ctx, ipmi_cmd_t *msg) {
     if (!ipmi_ctx)
     {
