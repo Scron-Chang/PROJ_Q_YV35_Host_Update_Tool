@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <freeipmi/api/ipmi-api.h>
 #include <freeipmi/driver/ipmi-openipmi-driver.h>
 #include "../includes/ipmi-api-defs.h"
@@ -17,24 +18,27 @@ typedef __UINT16_TYPE__ uint16_t;
 typedef __UINT32_TYPE__ uint32_t;
 #endif
 
+/* Project config */
 #define PROJ_NAME "FW UPDATE TOOL"
 #define PROJ_DESCRIPTION "Firmware update tool from host, including [BIC] [BIOS] [CPLD]."
 #define PROJ_VERSION "v1.0.1"
 #define PROJ_DATE "2022.04.01"
 #define PROJ_AUTH "Quanta"
+#define PROJ_LOG_FILE "./log.txt"
 
+/* Firware update size relative config */
 #define MAX_IMG_LENGTH 0x80000
 #define MAX_IPMB_SIZE 244
 #define MAX_IPMB_DATA_SIZE 224
 #define SECTOR_SZ_64K 0x10000
 
-/* ipmi-raw firmware update */
+/* Firware update command relative config(using ipmi-raw) */
 #define FW_UPDATE_NETFN 0x38
 #define FW_UPDATE_CMD 0x09
 #define FW_UPDATE_LUN 0x00
 #define PREFIX_IPMI_RAW "./ipmi-raw"
 
-/* IANA for QUANTA oem command */
+/* QUANTA oem command relative config */
 #define OEM_38 0x38
 #define OEM_36 0x36
 #define IANA_1 0x9C
@@ -66,30 +70,82 @@ typedef struct ipmi_cmd {
     uint32_t data_len;
 }ipmi_cmd_t;
 
+void GetDateTime(char *psDateTime)
+{
+    time_t nSeconds;
+    struct tm *pTM;
+
+    time(&nSeconds);
+    pTM = localtime(&nSeconds);
+
+    sprintf(psDateTime, "%04d-%02d-%02d %02d:%02d:%02d",
+            pTM->tm_year + 1900, pTM->tm_mon + 1, pTM->tm_mday,
+            pTM->tm_hour, pTM->tm_min, pTM->tm_sec);
+}
+
+void log_record(char *file_path, char *content, int init_flag) {
+    if (!file_path || !content) {
+        printf("<error> log_recode: empty file_path/content!");
+        return;
+    }
+
+    uint32_t content_size = 0;
+    char *tmp = content;
+    while(*tmp) {
+        content_size++;
+        tmp++;
+    }
+
+    FILE *ptr;
+    if (init_flag) {
+        ptr = fopen(file_path, "w");
+    } else {
+        ptr = fopen(file_path, "a");
+    }
+
+    if (!ptr) {
+        printf("<error> Invalid log file path [%s]\n", file_path);
+        return;
+    }
+    printf("%s\n", content);
+    char cur_time[22];
+    GetDateTime(cur_time);
+
+    char output[content_size+22];
+    sprintf(output, "[%s] %s", cur_time, content);
+
+    fwrite(output, 1, sizeof(output), ptr);
+
+    fclose(ptr);
+
+    return;
+}
+
 uint32_t read_binary(const char *bin_path, uint8_t *buff, uint32_t buff_len) {
     if (!buff)
         return 0;
 
     FILE *ptr;
-    uint32_t bin_size; /*filesize*/
+    uint32_t bin_size = 0;
 
-    ptr = fopen(bin_path,"rb");  // r for read, b for binary
+    ptr = fopen(bin_path,"rb");
     if (!ptr) {
         printf("<error> Invalid bin file path [%s]\n", bin_path);
         return 0;
     }
 
     fseek(ptr, 0, SEEK_END);
-    bin_size = ftell(ptr);         /*calc the size needed*/
+    bin_size = ftell(ptr);
     fseek(ptr, 0, SEEK_SET);
 
     if (bin_size > buff_len) {
         printf("<error> Given buffer length (0x%x) smaller than Image length (0x%x)\n",
                buff_len, bin_size);
-        return 0;
+        bin_size = 0;
+        goto ending;
     }
 
-    fread(buff, buff_len, 1, ptr); // read 10 bytes to our buffer
+    fread(buff, buff_len, 1, ptr);
 
     if (DEBUG_LOG >= 3) {
         for (int i=0; i<bin_size; i++)
@@ -98,20 +154,21 @@ uint32_t read_binary(const char *bin_path, uint8_t *buff, uint32_t buff_len) {
         printf("<system> Image size: 0x%x\n", bin_size);
     }
 
+ending:
+    fclose(ptr);
     return bin_size;
 }
 
 int send_recv_command(ipmi_ctx_t ipmi_ctx, ipmi_cmd_t *msg) {
-    if (!ipmi_ctx)
-    {
+    if (!ipmi_ctx || !msg)
         return 1;
-    }
 
     if (DEBUG_LOG >= 2) {
-        /* common print */
         printf("     * ipmi command     : 0x%x/0x%x\n", msg->netfn, msg->cmd);
         printf("     * ipmi data length : %d\n", msg->data_len);
         printf("     * ipmi data        : ");
+
+        /* IPMI data max print limit is 10 */
         int max_data_print = 10;
 
         if (msg->data_len <= max_data_print)
@@ -238,16 +295,15 @@ int do_bic_update(uint8_t *buff, uint32_t buff_len) {
         cmd_data.offset[1] = (cur_msg_offset >> 8) & 0xFF;
         cmd_data.offset[2] = (cur_msg_offset >> 16) & 0xFF;
         cmd_data.offset[3] = (cur_msg_offset >> 24) & 0xFF;
-
         cmd_data.length[0] = msg_len & 0xFF;
         cmd_data.length[1] = (msg_len >> 8) & 0xFF;
+        memcpy(cmd_data.data, cur_buff, msg_len);
 
         if ( percent != (cur_msg_offset+msg_len)*100/buff_len ) {
             percent = (cur_msg_offset+msg_len)*100/buff_len;
             if (!(percent % 5))
                 printf("         update status %d%%\n", percent);
         }
-        memcpy(cmd_data.data, cur_buff, msg_len);
 
         ipmi_cmd_t msg_out;
         msg_out.netfn = FW_UPDATE_NETFN << 2;
@@ -367,7 +423,7 @@ int main(int argc, const char** argv)
         return 0;
     }
 
-    /* STEP1 */
+    /* STEP1 - Read image */
     printf("\n<system> STEP1. Read image\n");
     uint32_t img_size = read_binary(img_path, img_buff, MAX_IMG_LENGTH);
     if (!img_size) {
@@ -376,7 +432,7 @@ int main(int argc, const char** argv)
     }
     printf("<system> PASS!\n");
 
-    /* STEP2 */
+    /* STEP2 - Upload image */
     printf("\n<system> STEP2. Upload image\n");
     if ( fw_update(img_idx, img_buff, img_size) ) {
         printf("\n<system> Update failed!\n");
