@@ -21,8 +21,8 @@ typedef __UINT32_TYPE__ uint32_t;
 /* Project config */
 #define PROJ_NAME "FW UPDATE TOOL"
 #define PROJ_DESCRIPTION "Firmware update tool from host, including [BIC] [BIOS] [CPLD]."
-#define PROJ_VERSION "v1.0.1"
-#define PROJ_DATE "2022.04.01"
+#define PROJ_VERSION "v1.0.2"
+#define PROJ_DATE "2022.04.07"
 #define PROJ_AUTH "Quanta"
 #define PROJ_LOG_FILE "./log.txt"
 
@@ -37,6 +37,7 @@ typedef __UINT32_TYPE__ uint32_t;
 #define FW_UPDATE_CMD 0x09
 #define FW_UPDATE_LUN 0x00
 #define PREFIX_IPMI_RAW "./ipmi-raw"
+#define IPMI_RAW_RETRY 2
 
 /* QUANTA oem command relative config */
 #define OEM_38 0x38
@@ -44,6 +45,30 @@ typedef __UINT32_TYPE__ uint32_t;
 #define IANA_1 0x9C
 #define IANA_2 0x9C
 #define IANA_3 0x00
+
+/* IPMI CC(from yv3.5) */
+enum { CC_SUCCESS = 0x00,
+       CC_INVALID_PARAM = 0x80,
+       CC_FRU_DEV_BUSY = 0x81,
+       CC_BRIDGE_MSG_ERR = 0x82,
+       CC_I2C_BUS_ERROR = 0x83,
+       CC_INVALID_IANA = 0x84,
+       CC_NODE_BUSY = 0xC0,
+       CC_INVALID_CMD = 0xC1,
+       CC_INVALID_LUN = 0xC2,
+       CC_TIMEOUT = 0xC3,
+       CC_OUT_OF_SPACE = 0xC4,
+       CC_INVALID_RESERVATION = 0xC5,
+       CC_DATA_TRUNCATED = 0xC6,
+       CC_INVALID_LENGTH = 0xC7,
+       CC_LENGTH_EXCEEDED = 0xC8,
+       CC_PARAM_OUT_OF_RANGE = 0xC9,
+       CC_SENSOR_NOT_PRESENT = 0xCB,
+       CC_INVALID_DATA_FIELD = 0xCC,
+       CC_CAN_NOT_RESPOND = 0xCE,
+       CC_NOT_SUPP_IN_CURR_STATE = 0xD5,
+       CC_UNSPECIFIED_ERROR = 0xFF,
+};
 
 int DEBUG_LOG = 0;
 
@@ -64,16 +89,29 @@ typedef struct fw_update_data {
 } fw_update_data_t;
 
 typedef struct ipmi_cmd {
-    uint8_t netfn; /* note whether include LUN */
+    uint8_t netfn; /* include LUN */
     uint8_t cmd;
     uint8_t data[MAX_IPMB_SIZE];
     uint32_t data_len;
 }ipmi_cmd_t;
 
-void GetDateTime(char *psDateTime)
+/*
+  - Name: datetime_get
+  - Description: Get current timestamp
+  - Input:
+      * psDateTime: Buffer to read back time string, ex:"2022-04-07 15:43:40"
+  - Return:
+      * none
+*/
+void datetime_get(char *psDateTime)
 {
+    if (!psDateTime) {
+        printf("<error> datetime_get: Get empty inputs!\n");
+        return;
+    }
+
     time_t nSeconds;
-    struct tm *pTM;
+    struct tm *pTM = NULL;
 
     time(&nSeconds);
     pTM = localtime(&nSeconds);
@@ -83,9 +121,19 @@ void GetDateTime(char *psDateTime)
             pTM->tm_hour, pTM->tm_min, pTM->tm_sec);
 }
 
+/*
+  - Name: log_record
+  - Description: Record log to file
+  - Input:
+      * file_path: ipmi-raw session
+      * content: IPMI package
+      * init_flag: 0 if append, 1 if create/rewrite
+  - Return:
+      * none
+*/
 void log_record(char *file_path, char *content, int init_flag) {
     if (!file_path || !content) {
-        printf("<error> log_recode: empty file_path/content!");
+        printf("<error> log_record: Get empty inputs!\n");
         return;
     }
 
@@ -104,12 +152,12 @@ void log_record(char *file_path, char *content, int init_flag) {
     }
 
     if (!ptr) {
-        printf("<error> Invalid log file path [%s]\n", file_path);
+        printf("<error> log_record: Invalid log file path [%s]\n", file_path);
         return;
     }
     printf("%s\n", content);
     char cur_time[22];
-    GetDateTime(cur_time);
+    datetime_get(cur_time);
 
     char output[content_size+22];
     sprintf(output, "[%s] %s", cur_time, content);
@@ -121,16 +169,29 @@ void log_record(char *file_path, char *content, int init_flag) {
     return;
 }
 
+/*
+  - Name: read_binary
+  - Description: Read binary file to buffer
+  - Input:
+      * bin_path: Binary file path
+      * buff: Buffer to read back image bytes
+      * buff_len: Buffer length
+  - Return:
+      * Binary file size, if no error
+      * 0, if error
+*/
 uint32_t read_binary(const char *bin_path, uint8_t *buff, uint32_t buff_len) {
-    if (!buff)
+    if (!buff || !bin_path) {
+        printf("<error> read_binary: Get empty inputs!\n");
         return 0;
+    }
 
     FILE *ptr;
     uint32_t bin_size = 0;
 
     ptr = fopen(bin_path,"rb");
     if (!ptr) {
-        printf("<error> Invalid bin file path [%s]\n", bin_path);
+        printf("<error> read_binary: Invalid bin file path [%s]\n", bin_path);
         return 0;
     }
 
@@ -139,7 +200,7 @@ uint32_t read_binary(const char *bin_path, uint8_t *buff, uint32_t buff_len) {
     fseek(ptr, 0, SEEK_SET);
 
     if (bin_size > buff_len) {
-        printf("<error> Given buffer length (0x%x) smaller than Image length (0x%x)\n",
+        printf("<error> read_binary: Given buffer length (0x%x) smaller than Image length (0x%x)\n",
                buff_len, bin_size);
         bin_size = 0;
         goto ending;
@@ -159,9 +220,21 @@ ending:
     return bin_size;
 }
 
+/*
+  - Name: send_recv_command
+  - Description: Send and receive message of ipmi-raw
+  - Input:
+      * ipmi_ctx: ipmi-raw session
+      * msg: IPMI package
+  - Return:
+      * Completion code, if no error
+      * -1, if error
+*/
 int send_recv_command(ipmi_ctx_t ipmi_ctx, ipmi_cmd_t *msg) {
-    if (!ipmi_ctx || !msg)
-        return 1;
+    if (!ipmi_ctx || !msg) {
+        printf("<error> send_recv_command: Get empty inputs!\n");
+        return -1;
+    }
 
     if (DEBUG_LOG >= 2) {
         printf("     * ipmi command     : 0x%x/0x%x\n", msg->netfn, msg->cmd);
@@ -184,13 +257,16 @@ int send_recv_command(ipmi_ctx_t ipmi_ctx, ipmi_cmd_t *msg) {
     if ( (msg->netfn >> 2) == OEM_36 || (msg->netfn >> 2) == OEM_38) {
         msg->data_len += 3;
         if (msg->data_len > MAX_IPMB_SIZE)
-            return 1;
+            return -1;
         oem_flag = 1;
     }
 
     uint8_t *ipmi_data;
     int init_idx = 0;
     ipmi_data = (uint8_t*)malloc(msg->data_len + 1);// Insert one byte from the head.
+    if (!ipmi_data) {
+        printf("<error> send_recv_command: ipmi_data malloc failed!\n");
+    }
     ipmi_data[0] = msg->cmd;// The byte #0 is cmd.
     init_idx++;
     if (oem_flag) {
@@ -205,8 +281,8 @@ int send_recv_command(ipmi_ctx_t ipmi_ctx, ipmi_cmd_t *msg) {
     uint8_t *bytes_rs = NULL;
     if (!(bytes_rs = calloc (65536*2, sizeof (uint8_t))))
     {
-        printf("Rx buf error\n");
-        return 1;
+        printf("<error> send_recv_command: bytes_rs calloc failed!\n");
+        return -1;
     }
 
     rs_len = ipmi_cmd_raw(
@@ -219,35 +295,57 @@ int send_recv_command(ipmi_ctx_t ipmi_ctx, ipmi_cmd_t *msg) {
         65536*2
     );
 
-    if (bytes_rs[0] != 0x09 || bytes_rs[1] != 0x00)
+    /* Check for ipmi-raw command response */
+    if (bytes_rs[0] != msg->cmd || bytes_rs[1] != CC_SUCCESS)
     {
-        return 1;
+        printf("<error> send_recv_command: ipmi-raw received bad cc 0x%x\n", bytes_rs[1]);
+        return bytes_rs[1];
     }
 
-    return 0;
+    /* Check for oem iana */
+    if (oem_flag) {
+        if (bytes_rs[2]!=IANA_1 || bytes_rs[3]!=IANA_2 || bytes_rs[4]!=IANA_3) {
+            printf("<error> send_recv_command: ipmi-raw received invalid IANA\n");
+            return -1;
+        }
+    }
+
+    return CC_SUCCESS;
 }
 
+/*
+  - Name: do_bic_update
+  - Description: BIC update process
+  - Input:
+      * buff: Buffer to store image bytes
+      * buff_len: Buffer length
+  - Return:
+      * 0, if no error
+      * 1, if error
+*/
 int do_bic_update(uint8_t *buff, uint32_t buff_len) {
-    if (!buff)
+    if (!buff) {
+        printf("<error> do_bic_update: Get empty inputs!\n");
         return 1;
+    }
 
     ipmi_ctx_t ipmi_ctx = ipmi_ctx_create();
     if (ipmi_ctx == NULL)
     {
-        printf("ipmi_ctx_create error\n");
+        printf("<error> do_bic_update: ipmi_ctx_create error\n");
         return 1;
     }
 
     ipmi_ctx->type = IPMI_DEVICE_OPENIPMI;
     if (!(ipmi_ctx->io.inband.openipmi_ctx = ipmi_openipmi_ctx_create ()))
     {
-        printf("!(ipmi_ctx->io.inband.openipmi_ctx = ipmi_openipmi_ctx_create ())\n");
+        printf("<error> do_bic_update: !(ipmi_ctx->io.inband.openipmi_ctx = ipmi_openipmi_ctx_create ())\n");
         return 1;
     }
 
     if (ipmi_openipmi_ctx_io_init (ipmi_ctx->io.inband.openipmi_ctx) < 0)
     {
-        printf("ipmi_openipmi_ctx_io_init (ctx->io.inband.openipmi_ctx) < 0\n");
+        printf("<error> do_bic_update: ipmi_openipmi_ctx_io_init (ctx->io.inband.openipmi_ctx) < 0\n");
         return 1;
     }
 
@@ -321,8 +419,13 @@ int do_bic_update(uint8_t *buff, uint32_t buff_len) {
                     msg_out.data[5]|(msg_out.data[6] << 8));
         }
 
-        if (send_recv_command(ipmi_ctx, &msg_out))
-        {
+        int resp_cc = send_recv_command(ipmi_ctx, &msg_out);
+        if (resp_cc) {
+            /* to handle unexpected user interrupt-behavior last time */
+            if (resp_cc == CC_INVALID_DATA_FIELD) {
+                printf("<warn> Given update offset not mach with previous record!\n");
+                printf("       Retry in few seconds...\n");
+            }
             return 1;
         }
 
@@ -337,16 +440,39 @@ int do_bic_update(uint8_t *buff, uint32_t buff_len) {
     return 0;
 }
 
+/*
+  - Name: fw_update
+  - Description: Firmware update controller
+  - Input:
+      * flag: Image type flag
+      * buff: Buffer to store image bytes
+      * buff_len: Buffer length
+  - Return:
+      * 0, if no error
+      * 1, if error
+*/
 int fw_update(fw_type_t flag, uint8_t *buff, uint32_t buff_len) {
     if (!buff) {
-        printf("<error> Get empty buffer!\n");
+        printf("<error> fw_update: Get empty inputs!\n");
         return 1;
     }
 
     switch(flag)
     {
     case FW_T_BIC:
-        if ( do_bic_update(buff, buff_len) )
+        ;
+        int retry = 0;
+        while (retry <= IPMI_RAW_RETRY)
+        {
+            if (retry)
+                printf("<system> BIC update retry %d/%d ...\n", retry, IPMI_RAW_RETRY);
+
+            int ret = do_bic_update(buff, buff_len)
+            if (!ret)
+                break;
+            retry++;
+        }
+        if (retry > IPMI_RAW_RETRY)
             return 1;
         break;
     case FW_T_BIOS:
