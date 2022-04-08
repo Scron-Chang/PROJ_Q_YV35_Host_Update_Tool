@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdarg.h>
 #include <freeipmi/api/ipmi-api.h>
 #include <freeipmi/driver/ipmi-openipmi-driver.h>
 #include "../includes/ipmi-api-defs.h"
@@ -21,10 +22,11 @@ typedef __UINT32_TYPE__ uint32_t;
 /* Project config */
 #define PROJ_NAME "FW UPDATE TOOL"
 #define PROJ_DESCRIPTION "Firmware update tool from host, including [BIC] [BIOS] [CPLD]."
-#define PROJ_VERSION "v1.0.2"
-#define PROJ_DATE "2022.04.07"
+#define PROJ_VERSION "v1.0.3"
+#define PROJ_DATE "2022.04.08"
 #define PROJ_AUTH "Quanta"
 #define PROJ_LOG_FILE "./log.txt"
+int DEBUG_LOG = 0;
 
 /* Firware update size relative config */
 #define MAX_IMG_LENGTH 0x80000
@@ -70,8 +72,6 @@ enum { CC_SUCCESS = 0x00,
        CC_UNSPECIFIED_ERROR = 0xFF,
 };
 
-int DEBUG_LOG = 0;
-
 typedef enum fw_type {
     FW_T_BIC,
     FW_T_BIOS,
@@ -95,6 +95,51 @@ typedef struct ipmi_cmd {
     uint32_t data_len;
 }ipmi_cmd_t;
 
+typedef enum
+{
+    LOG_INF = 0x01,
+    LOG_DBG = 0x02,
+    LOG_WRN = 0x04,
+    LOG_ERR = 0x08,
+    LOG_NON = 0xff
+}LOG_TAG;
+
+/*
+  - Name: log_print
+  - Description: Print message with header
+  - Input:
+      * level: Level of message
+      * va_alist: Format of message
+      * ...: Add args if needed in format
+  - Return:
+      * none
+*/
+void log_print(LOG_TAG level, const char *va_alist, ...)
+{
+    va_list ap;
+    switch (level)
+    {
+    case LOG_INF:
+        printf("<system> ");
+        break;
+    case LOG_DBG:
+        printf("<debug>  ");
+        break;
+    case LOG_WRN:
+        printf("<warn>   ");
+        break;
+    case LOG_ERR:
+        printf("<error>  ");
+        break;
+    default:
+        break;
+    }
+    va_start(ap, va_alist);
+    vfprintf(stdout, va_alist, ap);
+    va_end(ap);
+    return;
+}
+
 /*
   - Name: datetime_get
   - Description: Get current timestamp
@@ -106,7 +151,7 @@ typedef struct ipmi_cmd {
 void datetime_get(char *psDateTime)
 {
     if (!psDateTime) {
-        printf("<error> datetime_get: Get empty inputs!\n");
+        log_print(LOG_ERR, "%s: Get empty inputs!\n", __func__);
         return;
     }
 
@@ -133,7 +178,7 @@ void datetime_get(char *psDateTime)
 */
 void log_record(char *file_path, char *content, int init_flag) {
     if (!file_path || !content) {
-        printf("<error> log_record: Get empty inputs!\n");
+        log_print(LOG_ERR, "%s: Get empty inputs!\n", __func__);
         return;
     }
 
@@ -152,10 +197,10 @@ void log_record(char *file_path, char *content, int init_flag) {
     }
 
     if (!ptr) {
-        printf("<error> log_record: Invalid log file path [%s]\n", file_path);
+        log_print(LOG_ERR, "%s: Invalid log file path [%s]\n", __func__, file_path);
         return;
     }
-    printf("%s\n", content);
+    log_print(LOG_NON, "%s\n", content);
     char cur_time[22];
     datetime_get(cur_time);
 
@@ -182,7 +227,7 @@ void log_record(char *file_path, char *content, int init_flag) {
 */
 uint32_t read_binary(const char *bin_path, uint8_t *buff, uint32_t buff_len) {
     if (!buff || !bin_path) {
-        printf("<error> read_binary: Get empty inputs!\n");
+        log_print(LOG_ERR, "%s: Get empty inputs!\n", __func__);
         return 0;
     }
 
@@ -191,7 +236,7 @@ uint32_t read_binary(const char *bin_path, uint8_t *buff, uint32_t buff_len) {
 
     ptr = fopen(bin_path,"rb");
     if (!ptr) {
-        printf("<error> read_binary: Invalid bin file path [%s]\n", bin_path);
+        log_print(LOG_ERR, "%s: Invalid bin file path [%s]\n", __func__, bin_path);
         return 0;
     }
 
@@ -200,8 +245,8 @@ uint32_t read_binary(const char *bin_path, uint8_t *buff, uint32_t buff_len) {
     fseek(ptr, 0, SEEK_SET);
 
     if (bin_size > buff_len) {
-        printf("<error> read_binary: Given buffer length (0x%x) smaller than Image length (0x%x)\n",
-               buff_len, bin_size);
+        log_print(LOG_ERR, "%s: Given buffer length (0x%x) smaller than Image length (0x%x)\n",
+            __func__, buff_len, bin_size);
         bin_size = 0;
         goto ending;
     }
@@ -210,9 +255,9 @@ uint32_t read_binary(const char *bin_path, uint8_t *buff, uint32_t buff_len) {
 
     if (DEBUG_LOG >= 3) {
         for (int i=0; i<bin_size; i++)
-            printf("[0x%x] ", buff[i]);
-        printf("\n");
-        printf("<system> Image size: 0x%x\n", bin_size);
+            log_print(LOG_NON, "[0x%x] ", buff[i]);
+        log_print(LOG_NON, "\n");
+        log_print(LOG_INF, "Image size: 0x%x\n", bin_size);
     }
 
 ending:
@@ -231,15 +276,16 @@ ending:
       * -1, if error
 */
 int send_recv_command(ipmi_ctx_t ipmi_ctx, ipmi_cmd_t *msg) {
+    int ret = -1;
     if (!ipmi_ctx || !msg) {
-        printf("<error> send_recv_command: Get empty inputs!\n");
+        log_print(LOG_ERR, "%s: Get empty inputs!\n", __func__);
         return -1;
     }
 
     if (DEBUG_LOG >= 2) {
-        printf("     * ipmi command     : 0x%x/0x%x\n", msg->netfn, msg->cmd);
-        printf("     * ipmi data length : %d\n", msg->data_len);
-        printf("     * ipmi data        : ");
+        log_print(LOG_NON, "     * ipmi command     : 0x%x/0x%x\n", msg->netfn, msg->cmd);
+        log_print(LOG_NON, "     * ipmi data length : %d\n", msg->data_len);
+        log_print(LOG_NON, "     * ipmi data        : ");
 
         /* IPMI data max print limit is 10 */
         int max_data_print = 10;
@@ -248,8 +294,8 @@ int send_recv_command(ipmi_ctx_t ipmi_ctx, ipmi_cmd_t *msg) {
             max_data_print = msg->data_len;
 
         for (int i=0; i<max_data_print; i++)
-            printf("0x%x ", msg->data[i]);
-        printf("...\n");
+            log_print(LOG_NON, "0x%x ", msg->data[i]);
+        log_print(LOG_NON, "...\n");
     }
 
     int oem_flag = 0;
@@ -265,7 +311,8 @@ int send_recv_command(ipmi_ctx_t ipmi_ctx, ipmi_cmd_t *msg) {
     int init_idx = 0;
     ipmi_data = (uint8_t*)malloc(msg->data_len + 1);// Insert one byte from the head.
     if (!ipmi_data) {
-        printf("<error> send_recv_command: ipmi_data malloc failed!\n");
+        log_print(LOG_ERR, "%s: ipmi_data malloc failed!\n", __func__);
+        return -1;
     }
     ipmi_data[0] = msg->cmd;// The byte #0 is cmd.
     init_idx++;
@@ -281,8 +328,8 @@ int send_recv_command(ipmi_ctx_t ipmi_ctx, ipmi_cmd_t *msg) {
     uint8_t *bytes_rs = NULL;
     if (!(bytes_rs = calloc (65536*2, sizeof (uint8_t))))
     {
-        printf("<error> send_recv_command: bytes_rs calloc failed!\n");
-        return -1;
+        log_print(LOG_ERR, "%s: bytes_rs calloc failed!\n", __func__);
+        goto ending;
     }
 
     rs_len = ipmi_cmd_raw(
@@ -295,22 +342,29 @@ int send_recv_command(ipmi_ctx_t ipmi_ctx, ipmi_cmd_t *msg) {
         65536*2
     );
 
+    ret = bytes_rs[1];
+
     /* Check for ipmi-raw command response */
     if (bytes_rs[0] != msg->cmd || bytes_rs[1] != CC_SUCCESS)
     {
-        printf("<error> send_recv_command: ipmi-raw received bad cc 0x%x\n", bytes_rs[1]);
-        return bytes_rs[1];
+        log_print(LOG_ERR, "%s: ipmi-raw received bad cc 0x%x\n", __func__, bytes_rs[1]);
+        goto ending;
     }
 
     /* Check for oem iana */
     if (oem_flag) {
         if (bytes_rs[2]!=IANA_1 || bytes_rs[3]!=IANA_2 || bytes_rs[4]!=IANA_3) {
-            printf("<error> send_recv_command: ipmi-raw received invalid IANA\n");
-            return -1;
+            log_print(LOG_ERR, "%s: ipmi-raw received invalid IANA\n", __func__);
+            ret = -1;
+            goto ending;
         }
     }
 
-    return CC_SUCCESS;
+ending:
+    if (ipmi_data)
+        free(ipmi_data);
+
+    return ret;
 }
 
 /*
@@ -325,27 +379,27 @@ int send_recv_command(ipmi_ctx_t ipmi_ctx, ipmi_cmd_t *msg) {
 */
 int do_bic_update(uint8_t *buff, uint32_t buff_len) {
     if (!buff) {
-        printf("<error> do_bic_update: Get empty inputs!\n");
+        log_print(LOG_ERR, "%s: Get empty inputs!\n", __func__);
         return 1;
     }
 
     ipmi_ctx_t ipmi_ctx = ipmi_ctx_create();
     if (ipmi_ctx == NULL)
     {
-        printf("<error> do_bic_update: ipmi_ctx_create error\n");
+        log_print(LOG_ERR, "%s: ipmi_ctx_create error\n", __func__);
         return 1;
     }
 
     ipmi_ctx->type = IPMI_DEVICE_OPENIPMI;
     if (!(ipmi_ctx->io.inband.openipmi_ctx = ipmi_openipmi_ctx_create ()))
     {
-        printf("<error> do_bic_update: !(ipmi_ctx->io.inband.openipmi_ctx = ipmi_openipmi_ctx_create ())\n");
+        log_print(LOG_ERR, "%s: !(ipmi_ctx->io.inband.openipmi_ctx = ipmi_openipmi_ctx_create ())\n", __func__);
         return 1;
     }
 
     if (ipmi_openipmi_ctx_io_init (ipmi_ctx->io.inband.openipmi_ctx) < 0)
     {
-        printf("<error> do_bic_update: ipmi_openipmi_ctx_io_init (ctx->io.inband.openipmi_ctx) < 0\n");
+        log_print(LOG_ERR, "%s: ipmi_openipmi_ctx_io_init (ctx->io.inband.openipmi_ctx) < 0\n", __func__);
         return 1;
     }
 
@@ -400,7 +454,7 @@ int do_bic_update(uint8_t *buff, uint32_t buff_len) {
         if ( percent != (cur_msg_offset+msg_len)*100/buff_len ) {
             percent = (cur_msg_offset+msg_len)*100/buff_len;
             if (!(percent % 5))
-                printf("         update status %d%%\n", percent);
+                log_print(LOG_NON, "         update status %d%%\n", percent);
         }
 
         ipmi_cmd_t msg_out;
@@ -410,10 +464,10 @@ int do_bic_update(uint8_t *buff, uint32_t buff_len) {
         memcpy(msg_out.data, &cmd_data, msg_len+7); /* todo */
 
         if (DEBUG_LOG >= 1) {
-            printf("<debug> section_idx[%d] section_offset[0x%x/0x%x] image_offset[0x%x]\n",
+            log_print(LOG_DBG, "section_idx[%d] section_offset[0x%x/0x%x] image_offset[0x%x]\n",
                    section_idx, section_offset, SECTOR_SZ_64K, cur_msg_offset);
             /* custom print for each command */
-            printf("        target[0x%x] offset[0x%x] size[%d]\n",
+            log_print(LOG_NON, "        target[0x%x] offset[0x%x] size[%d]\n",
                     msg_out.data[0],
                     msg_out.data[1]|(msg_out.data[2] << 8)|(msg_out.data[3] << 16)|(msg_out.data[4] << 24),
                     msg_out.data[5]|(msg_out.data[6] << 8));
@@ -423,8 +477,8 @@ int do_bic_update(uint8_t *buff, uint32_t buff_len) {
         if (resp_cc) {
             /* to handle unexpected user interrupt-behavior last time */
             if (resp_cc == CC_INVALID_DATA_FIELD) {
-                printf("<warn> Given update offset not mach with previous record!\n");
-                printf("       Retry in few seconds...\n");
+                log_print(LOG_WRN, "Given update offset not mach with previous record!\n");
+                log_print(LOG_NON, "         Retry in few seconds...\n");
             }
             return 1;
         }
@@ -453,7 +507,7 @@ int do_bic_update(uint8_t *buff, uint32_t buff_len) {
 */
 int fw_update(fw_type_t flag, uint8_t *buff, uint32_t buff_len) {
     if (!buff) {
-        printf("<error> fw_update: Get empty inputs!\n");
+        log_print(LOG_ERR, "%s: Get empty inputs!\n", __func__);
         return 1;
     }
 
@@ -465,9 +519,9 @@ int fw_update(fw_type_t flag, uint8_t *buff, uint32_t buff_len) {
         while (retry <= IPMI_RAW_RETRY)
         {
             if (retry)
-                printf("<system> BIC update retry %d/%d ...\n", retry, IPMI_RAW_RETRY);
+                log_print(LOG_INF, "BIC update retry %d/%d ...\n", retry, IPMI_RAW_RETRY);
 
-            int ret = do_bic_update(buff, buff_len)
+            int ret = do_bic_update(buff, buff_len);
             if (!ret)
                 break;
             retry++;
@@ -476,15 +530,15 @@ int fw_update(fw_type_t flag, uint8_t *buff, uint32_t buff_len) {
             return 1;
         break;
     case FW_T_BIOS:
-        printf("<warn> BIOS update hasn't support yet!\n");
+        log_print(LOG_WRN, "BIOS update hasn't support yet!\n");
         return 1;
         break;
     case FW_T_CPLD:
-        printf("<warn> CPLD update hasn't support yet!\n");
+        log_print(LOG_WRN, "CPLD update hasn't support yet!\n");
         return 1;
         break;
     default:
-        printf("<error> fw_update: No such flag!\n");
+        log_print(LOG_ERR, "%s: No such flag!\n", __func__);
         return 1;
         break;
     }
@@ -493,20 +547,20 @@ int fw_update(fw_type_t flag, uint8_t *buff, uint32_t buff_len) {
 }
 
 void HELP() {
-    printf("Try: ./host_fw_update <fw_type> <img_path> <log_level>\n");
-    printf("     <fw_type>   Firmware type [0]BIC [1]BIOS [2]CPLD\n");
-    printf("     <img_path>  Image path\n");
-    printf("     <log_level> (optional) Log level [-v]L1 [-vv]L2 [-vvv]L3\n\n");
+    log_print(LOG_NON, "Try: ./host_fw_update <fw_type> <img_path> <log_level>\n");
+    log_print(LOG_NON, "     <fw_type>   Firmware type [0]BIC [1]BIOS [2]CPLD\n");
+    log_print(LOG_NON, "     <img_path>  Image path\n");
+    log_print(LOG_NON, "     <log_level> (optional) Log level [-v]L1 [-vv]L2 [-vvv]L3\n\n");
 }
 
 void HEADER_PRINT() {
-    printf("===============================================================================\n");
-    printf("* Name         : %s\n", PROJ_NAME);
-    printf("* Description  : %s\n", PROJ_DESCRIPTION);
-    printf("* Ver/Date     : %s/%s\n", PROJ_VERSION, PROJ_DATE);
-    printf("* Author       : %s\n", PROJ_AUTH);
-    printf("* Note         : %s\n", "none");
-    printf("===============================================================================\n");
+    log_print(LOG_NON, "===============================================================================\n");
+    log_print(LOG_NON, "* Name         : %s\n", PROJ_NAME);
+    log_print(LOG_NON, "* Description  : %s\n", PROJ_DESCRIPTION);
+    log_print(LOG_NON, "* Ver/Date     : %s/%s\n", PROJ_VERSION, PROJ_DATE);
+    log_print(LOG_NON, "* Author       : %s\n", PROJ_AUTH);
+    log_print(LOG_NON, "* Note         : %s\n", "none");
+    log_print(LOG_NON, "===============================================================================\n");
 }
 
 int main(int argc, const char** argv)
@@ -531,42 +585,48 @@ int main(int argc, const char** argv)
     const char *img_path = argv[2];
 
     if ( (img_idx >= FW_T_MAX_IDX) || (img_idx < 0) ) {
-        printf("<error> Invalid <fw_type>!\n");
+        log_print(LOG_ERR, "Invalid <fw_type>!\n");
         HELP();
         return 0;
     }
 
     if (!DEBUG_LOG)
-        printf("<system> Detail ignore...\n");
+        log_print(LOG_INF, "Detail ignore...\n");
     else
-        printf("<system> Detail leven %d...\n", DEBUG_LOG);
+        log_print(LOG_INF, "Detail leven %d...\n", DEBUG_LOG);
 
-    printf("\n<system> Start [%s] update task with image [%s]\n", IMG_TYPE_LST[img_idx], img_path);
+    log_print(LOG_NON, "\n");
+    log_print(LOG_INF, "Start [%s] update task with image [%s]\n", IMG_TYPE_LST[img_idx], img_path);
 
     uint8_t *img_buff = malloc(sizeof(uint8_t) * MAX_IMG_LENGTH);
     if (!img_buff) {
-        printf("<error> img_buff malloc failed!\n");
+        log_print(LOG_ERR, "img_buff malloc failed!\n");
         return 0;
     }
 
     /* STEP1 - Read image */
-    printf("\n<system> STEP1. Read image\n");
+    log_print(LOG_NON, "\n");
+    log_print(LOG_INF, "STEP1. Read image\n");
     uint32_t img_size = read_binary(img_path, img_buff, MAX_IMG_LENGTH);
     if (!img_size) {
-        printf("\n<system> Update failed!\n");
+        log_print(LOG_NON, "\n");
+        log_print(LOG_INF, "Update failed!\n");
         goto ending;
     }
-    printf("<system> PASS!\n");
+    log_print(LOG_INF, "PASS!\n");
 
     /* STEP2 - Upload image */
-    printf("\n<system> STEP2. Upload image\n");
+    log_print(LOG_NON, "\n");
+    log_print(LOG_INF, "STEP2. Upload image\n");
     if ( fw_update(img_idx, img_buff, img_size) ) {
-        printf("\n<system> Update failed!\n");
+        log_print(LOG_NON, "\n");
+        log_print(LOG_INF, "Update failed!\n");
         goto ending;
     }
-    printf("<system> PASS!\n");
+    log_print(LOG_INF, "PASS!\n");
 
-    printf("\n<system> Update complete!\n");
+    log_print(LOG_NON, "\n");
+    log_print(LOG_INF, "Update complete!\n");
 
 ending:
     if (img_buff)
