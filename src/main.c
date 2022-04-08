@@ -5,7 +5,7 @@
 #include <stdarg.h>
 #include <freeipmi/api/ipmi-api.h>
 #include <freeipmi/driver/ipmi-openipmi-driver.h>
-#include "../includes/ipmi-api-defs.h"
+#include "ipmi-api-defs.h"
 
 #ifdef __UINT8_TYPE__
 typedef __UINT8_TYPE__ uint8_t;
