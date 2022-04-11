@@ -1,8 +1,13 @@
+#include <ctype.h>
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <stdarg.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <freeipmi/api/ipmi-api.h>
 #include <freeipmi/driver/ipmi-openipmi-driver.h>
 #include "ipmi-api-defs.h"
@@ -563,8 +568,111 @@ void HEADER_PRINT() {
     log_print(LOG_NON, "===============================================================================\n");
 }
 
+int str_is_number(const char* str)
+{
+    for (int i = 0; str[i] != '\0'; i++)
+    {
+        if (!isdigit(str[i]))
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int find_exe_by_pid(int pid, char *target_exe_path)
+{
+    char *proc_exe_path;
+    struct stat exe_stat;
+    int buf_size, len;
+    int ret = -1;
+
+    if (!pid)
+    {
+        return ret;
+    }
+
+    if ((len = asprintf(&proc_exe_path, "/proc/%d/exe", pid)) == -1)
+    {
+        printf("Func get_pid_by_name asprintf failed, pid: %d\n", pid);
+        exit(EXIT_FAILURE);
+    }
+
+    // Use the lstat to check whether the exe file exists.
+    if (!lstat(proc_exe_path, &exe_stat))
+    {
+        buf_size = exe_stat.st_size + 1;
+        if (!exe_stat.st_size)
+        {
+            buf_size = PATH_MAX;
+        }
+
+        if ((len = readlink(proc_exe_path, target_exe_path, buf_size)) > 0)
+        {
+            ret = 0; // Succeed.
+        }
+    }
+
+    free(proc_exe_path);
+    return ret;
+}
+
+int check_process_active(const char* filename)
+{
+    DIR *proc_dir;
+    struct dirent* proc_dir_info;
+    char exe_path[PATH_MAX];
+
+    int proc_pid = -1;
+
+    if (!(proc_dir = opendir("/proc")))
+    {
+        printf("Failed to open /proc");
+        exit(EXIT_FAILURE);
+    }
+
+    while ((proc_dir_info = readdir(proc_dir)) != 0)
+    {
+        if (str_is_number(proc_dir_info->d_name))
+        {
+            continue;
+        }
+
+        if(!(proc_pid = atoi(proc_dir_info->d_name)))
+        {
+            continue;
+        }
+
+        memset(exe_path, 0, sizeof(exe_path));
+        if(find_exe_by_pid(proc_pid, exe_path))
+        {
+            continue;
+        }
+
+        if (!strstr(exe_path, filename))
+        {
+            continue;
+        }
+
+        if ( (int)getpid() == proc_pid )
+        {
+            continue;
+        }
+
+        return 0;
+    }
+
+    return 1;
+}
+
 int main(int argc, const char** argv)
 {
+    const char* filename = argv[0] + 2; // Skip "./" to get the executable name.
+    if (!check_process_active(filename)){
+        printf("BIC update tool is processing.\n");
+        return 1;
+    }
+
     HEADER_PRINT();
 
     if (argc!=3 && argc!=4) {
