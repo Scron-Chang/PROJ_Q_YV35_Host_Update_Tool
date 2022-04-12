@@ -109,6 +109,18 @@ typedef enum
     LOG_NON = 0xff
 }LOG_TAG;
 
+/* Function declare */
+static void log_print(LOG_TAG level, const char *va_alist, ...);
+static void datetime_get(char *psDateTime);
+static void log_record(char *file_path, char *content, int init_flag);
+static int str_is_number(const char* str);
+static int find_exe_by_pid(int pid, char *target_exe_path);
+static int check_process_active(const char* filename);
+static uint32_t read_binary(const char *bin_path, uint8_t *buff, uint32_t buff_len);
+static int send_recv_command(ipmi_ctx_t ipmi_ctx, ipmi_cmd_t *msg);
+static int do_bic_update(uint8_t *buff, uint32_t buff_len);
+static int fw_update(fw_type_t flag, uint8_t *buff, uint32_t buff_len);
+
 /*
   - Name: log_print
   - Description: Print message with header
@@ -119,8 +131,11 @@ typedef enum
   - Return:
       * none
 */
-void log_print(LOG_TAG level, const char *va_alist, ...)
+static void log_print(LOG_TAG level, const char *va_alist, ...)
 {
+    if (!va_alist)
+        return;
+
     va_list ap;
     switch (level)
     {
@@ -153,7 +168,7 @@ void log_print(LOG_TAG level, const char *va_alist, ...)
   - Return:
       * none
 */
-void datetime_get(char *psDateTime)
+static void datetime_get(char *psDateTime)
 {
     if (!psDateTime) {
         log_print(LOG_ERR, "%s: Get empty inputs!\n", __func__);
@@ -181,7 +196,8 @@ void datetime_get(char *psDateTime)
   - Return:
       * none
 */
-void log_record(char *file_path, char *content, int init_flag) {
+static void log_record(char *file_path, char *content, int init_flag)
+{
     if (!file_path || !content) {
         log_print(LOG_ERR, "%s: Get empty inputs!\n", __func__);
         return;
@@ -220,6 +236,131 @@ void log_record(char *file_path, char *content, int init_flag) {
 }
 
 /*
+  - Name: str_is_number
+  - Description:
+  - Input:
+      * str:
+  - Return:
+      * 1, if ?
+      * 0, if ?
+*/
+static int str_is_number(const char* str)
+{
+    for (int i = 0; str[i] != '\0'; i++)
+    {
+        if (!isdigit(str[i]))
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/*
+  - Name: find_exe_by_pid
+  - Description:
+  - Input:
+      * pid:
+      * target_exe_path:
+  - Return:
+      * -1, if ?
+      * 0, if ?
+*/
+static int find_exe_by_pid(int pid, char *target_exe_path)
+{
+    char *proc_exe_path = NULL;
+    struct stat exe_stat;
+    int buf_size, len;
+    int ret = -1;
+
+    if (!pid)
+    {
+        return ret;
+    }
+
+    if ((len = asprintf(&proc_exe_path, "/proc/%d/exe", pid)) == -1)
+    {
+        printf("Func get_pid_by_name asprintf failed, pid: %d\n", pid);
+        exit(EXIT_FAILURE);
+    }
+
+    // Use the lstat to check whether the exe file exists.
+    if (!lstat(proc_exe_path, &exe_stat))
+    {
+        buf_size = exe_stat.st_size + 1;
+        if (!exe_stat.st_size)
+        {
+            buf_size = PATH_MAX;
+        }
+
+        if ((len = readlink(proc_exe_path, target_exe_path, buf_size)) > 0)
+        {
+            ret = 0; // Succeed.
+        }
+    }
+
+    free(proc_exe_path);
+    return ret;
+}
+
+/*
+  - Name: check_process_active
+  - Description:
+  - Input:
+      * filename:
+  - Return:
+      * 1, if ?
+      * 0, if ?
+*/
+static int check_process_active(const char* filename)
+{
+    DIR *proc_dir = NULL;
+    struct dirent* proc_dir_info = NULL;
+    char exe_path[PATH_MAX];
+
+    int proc_pid = -1;
+
+    if (!(proc_dir = opendir("/proc")))
+    {
+        printf("Failed to open /proc");
+        exit(EXIT_FAILURE);
+    }
+
+    while ((proc_dir_info = readdir(proc_dir)) != 0)
+    {
+        if (str_is_number(proc_dir_info->d_name))
+        {
+            continue;
+        }
+
+        if(!(proc_pid = atoi(proc_dir_info->d_name)))
+        {
+            continue;
+        }
+
+        memset(exe_path, 0, sizeof(exe_path));
+        if(find_exe_by_pid(proc_pid, exe_path))
+        {
+            continue;
+        }
+
+        if (!strstr(exe_path, filename))
+        {
+            continue;
+        }
+
+        if ( (int)getpid() == proc_pid )
+        {
+            continue;
+        }
+
+        return 0;
+    }
+
+    return 1;
+}
+
+/*
   - Name: read_binary
   - Description: Read binary file to buffer
   - Input:
@@ -230,7 +371,8 @@ void log_record(char *file_path, char *content, int init_flag) {
       * Binary file size, if no error
       * 0, if error
 */
-uint32_t read_binary(const char *bin_path, uint8_t *buff, uint32_t buff_len) {
+static uint32_t read_binary(const char *bin_path, uint8_t *buff, uint32_t buff_len)
+{
     if (!buff || !bin_path) {
         log_print(LOG_ERR, "%s: Get empty inputs!\n", __func__);
         return 0;
@@ -280,7 +422,8 @@ ending:
       * Completion code, if no error
       * -1, if error
 */
-int send_recv_command(ipmi_ctx_t ipmi_ctx, ipmi_cmd_t *msg) {
+static int send_recv_command(ipmi_ctx_t ipmi_ctx, ipmi_cmd_t *msg)
+{
     int ret = -1;
     if (!ipmi_ctx || !msg) {
         log_print(LOG_ERR, "%s: Get empty inputs!\n", __func__);
@@ -382,7 +525,8 @@ ending:
       * 0, if no error
       * 1, if error
 */
-int do_bic_update(uint8_t *buff, uint32_t buff_len) {
+static int do_bic_update(uint8_t *buff, uint32_t buff_len)
+{
     if (!buff) {
         log_print(LOG_ERR, "%s: Get empty inputs!\n", __func__);
         return 1;
@@ -510,7 +654,8 @@ int do_bic_update(uint8_t *buff, uint32_t buff_len) {
       * 0, if no error
       * 1, if error
 */
-int fw_update(fw_type_t flag, uint8_t *buff, uint32_t buff_len) {
+static int fw_update(fw_type_t flag, uint8_t *buff, uint32_t buff_len)
+{
     if (!buff) {
         log_print(LOG_ERR, "%s: Get empty inputs!\n", __func__);
         return 1;
@@ -551,14 +696,16 @@ int fw_update(fw_type_t flag, uint8_t *buff, uint32_t buff_len) {
     return 0;
 }
 
-void HELP() {
+void HELP()
+{
     log_print(LOG_NON, "Try: ./host_fw_update <fw_type> <img_path> <log_level>\n");
     log_print(LOG_NON, "     <fw_type>   Firmware type [0]BIC [1]BIOS [2]CPLD\n");
     log_print(LOG_NON, "     <img_path>  Image path\n");
     log_print(LOG_NON, "     <log_level> (optional) Log level [-v]L1 [-vv]L2 [-vvv]L3\n\n");
 }
 
-void HEADER_PRINT() {
+void HEADER_PRINT()
+{
     log_print(LOG_NON, "===============================================================================\n");
     log_print(LOG_NON, "* Name         : %s\n", PROJ_NAME);
     log_print(LOG_NON, "* Description  : %s\n", PROJ_DESCRIPTION);
@@ -566,103 +713,6 @@ void HEADER_PRINT() {
     log_print(LOG_NON, "* Author       : %s\n", PROJ_AUTH);
     log_print(LOG_NON, "* Note         : %s\n", "none");
     log_print(LOG_NON, "===============================================================================\n");
-}
-
-int str_is_number(const char* str)
-{
-    for (int i = 0; str[i] != '\0'; i++)
-    {
-        if (!isdigit(str[i]))
-        {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-int find_exe_by_pid(int pid, char *target_exe_path)
-{
-    char *proc_exe_path;
-    struct stat exe_stat;
-    int buf_size, len;
-    int ret = -1;
-
-    if (!pid)
-    {
-        return ret;
-    }
-
-    if ((len = asprintf(&proc_exe_path, "/proc/%d/exe", pid)) == -1)
-    {
-        printf("Func get_pid_by_name asprintf failed, pid: %d\n", pid);
-        exit(EXIT_FAILURE);
-    }
-
-    // Use the lstat to check whether the exe file exists.
-    if (!lstat(proc_exe_path, &exe_stat))
-    {
-        buf_size = exe_stat.st_size + 1;
-        if (!exe_stat.st_size)
-        {
-            buf_size = PATH_MAX;
-        }
-
-        if ((len = readlink(proc_exe_path, target_exe_path, buf_size)) > 0)
-        {
-            ret = 0; // Succeed.
-        }
-    }
-
-    free(proc_exe_path);
-    return ret;
-}
-
-int check_process_active(const char* filename)
-{
-    DIR *proc_dir;
-    struct dirent* proc_dir_info;
-    char exe_path[PATH_MAX];
-
-    int proc_pid = -1;
-
-    if (!(proc_dir = opendir("/proc")))
-    {
-        printf("Failed to open /proc");
-        exit(EXIT_FAILURE);
-    }
-
-    while ((proc_dir_info = readdir(proc_dir)) != 0)
-    {
-        if (str_is_number(proc_dir_info->d_name))
-        {
-            continue;
-        }
-
-        if(!(proc_pid = atoi(proc_dir_info->d_name)))
-        {
-            continue;
-        }
-
-        memset(exe_path, 0, sizeof(exe_path));
-        if(find_exe_by_pid(proc_pid, exe_path))
-        {
-            continue;
-        }
-
-        if (!strstr(exe_path, filename))
-        {
-            continue;
-        }
-
-        if ( (int)getpid() == proc_pid )
-        {
-            continue;
-        }
-
-        return 0;
-    }
-
-    return 1;
 }
 
 int main(int argc, const char** argv)
