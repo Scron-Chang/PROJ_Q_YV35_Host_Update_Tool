@@ -338,6 +338,11 @@ static int check_process_active(const char* filename)
             continue;
         }
 
+        if ( (int)getpid() == proc_pid )
+        {
+            continue;
+        }
+
         memset(exe_path, 0, sizeof(exe_path));
         if(find_exe_by_pid(proc_pid, exe_path))
         {
@@ -345,11 +350,6 @@ static int check_process_active(const char* filename)
         }
 
         if (!strstr(exe_path, filename))
-        {
-            continue;
-        }
-
-        if ( (int)getpid() == proc_pid )
         {
             continue;
         }
