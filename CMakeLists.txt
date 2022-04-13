@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.12)
+cmake_minimum_required(VERSION 3.5)
 project(yv35_host_update)
 
 MACRO(INCLUDE_SUBDIR targetdir)
@@ -14,8 +14,8 @@ ENDMACRO()
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/output)
 
 # define macro to include config.h
-add_compile_definitions(HAVE_CONFIG_H)
-add_compile_definitions(_GNU_SOURCE)
+add_definitions(-DHAVE_CONFIG_H)
+add_definitions(-D_GNU_SOURCE)
 
 # list neccessary code in freeipmi 
 FILE(GLOB_RECURSE freeipmi_sources freeipmi-1.6.9/libfreeipmi/*.c)

@@ -3,7 +3,7 @@ Firware update from host by Freeipmi(ipmi-raw).
 
 ## REQUIREMENT
 - OS: Linux
-- CMAKE: 3.12
+- CMAKE: 3.5
 
 ## FEATURE
 - Muti-process circumstance prevent is supported
@@ -11,10 +11,11 @@ Firware update from host by Freeipmi(ipmi-raw).
 
 ## BUILD
 ```
-cmake -G "Unix Makefiles"
+mkdir build && cd build/
+cmake ..
 make
 ```
-- output exe file: ./output/host_update
+- output exe file: ./build/output/host_update
 
 ## USAGE
 #### Step1. Move exe file to host
