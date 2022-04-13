@@ -292,6 +292,12 @@ static int find_exe_by_pid(int pid, char *target_exe_path)
         return ret;
     }
 
+    if (target_exe_path == NULL)
+    {
+        printf("%d: %s invalid argument\n",__LINE__, __FUNCTION__);
+        exit(EXIT_FAILURE);
+    }
+
     if ((len = asprintf(&proc_exe_path, "/proc/%d/exe", pid)) == -1)
     {
         log_print(LOG_ERR, "%s: asprintf failed, pid: %d\n", __func__, pid);
