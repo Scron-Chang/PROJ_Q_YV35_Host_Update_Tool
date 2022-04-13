@@ -245,10 +245,11 @@ static void log_record(char *file_path, char *content, int init_flag)
   - Name: str_is_number
   - Description: Whether string is a number
   - Input:
-      * str: Input string
+      * str: The str will be checked to whether it contains a non-numeric
+      * character.
   - Return:
-      * 1, if false
-      * 0, if true
+      * 1, if the str only consists of numeric characters
+      * 0, otherwise.
 */
 static int str_is_number(const char* str)
 {
@@ -266,11 +267,12 @@ static int str_is_number(const char* str)
   - Name: find_exe_by_pid
   - Description: Find running exe by pid
   - Input:
-      * pid: Pid of exe
-      * target_exe_path: Exe file
+      * pid: The process Id of an executable to be found.
+      * target_exe_path: If the executable of the input pid is found, this
+      * parameter will have the path.
   - Return:
-      * -1, if error
-      * 0, if success
+      * -1, if the input parameter is invalid or the executable is not found.
+      * 0, if the executable is found successfully.
 */
 static int find_exe_by_pid(int pid, char *target_exe_path)
 {
@@ -313,10 +315,11 @@ static int find_exe_by_pid(int pid, char *target_exe_path)
   - Name: check_process_active
   - Description: Check whether any process is running exe
   - Input:
-      * filename: Exe file
+      * filename: Use the filename to search whether there is the same
+      * executable is working.
   - Return:
-      * 1, if exe file is not processing
-      * 0, if exe file is processing
+      * 1, if the executable is not found.
+      * 0, otherwise.
 */
 static int check_process_active(const char* filename)
 {
