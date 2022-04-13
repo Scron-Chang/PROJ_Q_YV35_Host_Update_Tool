@@ -77,6 +77,12 @@ enum { CC_SUCCESS = 0x00,
        CC_UNSPECIFIED_ERROR = 0xFF,
 };
 
+/*
+ * IPMI 2.0 Payload is 2 bytes, so we'll assume that size * 2 for good measure.
+ * This is from the ipmi-raw head file.
+ */
+#define IPMI_RAW_MAX_ARGS (65536*2)
+
 typedef enum fw_type {
     FW_T_BIC,
     FW_T_BIOS,
@@ -474,7 +480,7 @@ static int send_recv_command(ipmi_ctx_t ipmi_ctx, ipmi_cmd_t *msg)
 
     int rs_len = 0;
     uint8_t *bytes_rs = NULL;
-    if (!(bytes_rs = calloc (65536*2, sizeof (uint8_t))))
+    if (!(bytes_rs = calloc (IPMI_RAW_MAX_ARGS, sizeof (uint8_t))))
     {
         log_print(LOG_ERR, "%s: bytes_rs calloc failed!\n", __func__);
         goto ending;
@@ -487,7 +493,7 @@ static int send_recv_command(ipmi_ctx_t ipmi_ctx, ipmi_cmd_t *msg)
         ipmi_data, //byte #0 = cmd
         msg->data_len + 1, // Add 1 because the cmd is combined with the data buf.
         bytes_rs,
-        65536*2
+        IPMI_RAW_MAX_ARGS
     );
 
     ret = bytes_rs[1];
