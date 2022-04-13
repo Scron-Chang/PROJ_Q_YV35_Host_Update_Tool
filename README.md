@@ -3,7 +3,7 @@ Firware update from host by Freeipmi(ipmi-raw).
 
 ## REQUIREMENT
 - OS: Linux
-- CMAKE: 3.5
+- CMAKE: 3.5 or above
 
 ## FEATURE
 - Muti-process circumstance prevent is supported
