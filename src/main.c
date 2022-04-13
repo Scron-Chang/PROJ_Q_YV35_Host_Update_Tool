@@ -27,8 +27,8 @@ typedef __UINT32_TYPE__ uint32_t;
 /* Project config */
 #define PROJ_NAME "FW UPDATE TOOL"
 #define PROJ_DESCRIPTION "Firmware update tool from host, including [BIC] [BIOS] [CPLD]."
-#define PROJ_VERSION "v1.0.3"
-#define PROJ_DATE "2022.04.08"
+#define PROJ_VERSION "v1.0.4"
+#define PROJ_DATE "2022.04.13"
 #define PROJ_AUTH "Quanta"
 #define PROJ_LOG_FILE "./log.txt"
 int DEBUG_LOG = 0;
@@ -243,12 +243,12 @@ static void log_record(char *file_path, char *content, int init_flag)
 
 /*
   - Name: str_is_number
-  - Description:
+  - Description: Whether string is a number
   - Input:
-      * str:
+      * str: Input string
   - Return:
-      * 1, if ?
-      * 0, if ?
+      * 1, if false
+      * 0, if true
 */
 static int str_is_number(const char* str)
 {
@@ -264,13 +264,13 @@ static int str_is_number(const char* str)
 
 /*
   - Name: find_exe_by_pid
-  - Description:
+  - Description: Find running exe by pid
   - Input:
-      * pid:
-      * target_exe_path:
+      * pid: Pid of exe
+      * target_exe_path: Exe file
   - Return:
-      * -1, if ?
-      * 0, if ?
+      * -1, if error
+      * 0, if success
 */
 static int find_exe_by_pid(int pid, char *target_exe_path)
 {
@@ -286,7 +286,7 @@ static int find_exe_by_pid(int pid, char *target_exe_path)
 
     if ((len = asprintf(&proc_exe_path, "/proc/%d/exe", pid)) == -1)
     {
-        printf("Func get_pid_by_name asprintf failed, pid: %d\n", pid);
+        log_print(LOG_ERR, "%s: asprintf failed, pid: %d\n", __func__, pid);
         exit(EXIT_FAILURE);
     }
 
@@ -311,12 +311,12 @@ static int find_exe_by_pid(int pid, char *target_exe_path)
 
 /*
   - Name: check_process_active
-  - Description:
+  - Description: Check whether any process is running exe
   - Input:
-      * filename:
+      * filename: Exe file
   - Return:
-      * 1, if ?
-      * 0, if ?
+      * 1, if exe file is not processing
+      * 0, if exe file is processing
 */
 static int check_process_active(const char* filename)
 {
@@ -328,7 +328,7 @@ static int check_process_active(const char* filename)
 
     if (!(proc_dir = opendir("/proc")))
     {
-        printf("Failed to open /proc");
+        log_print(LOG_ERR, "%s: Failed to open /proc\n", __func__);
         exit(EXIT_FAILURE);
     }
 
@@ -591,7 +591,6 @@ static int do_bic_update(uint8_t *buff, uint32_t buff_len)
             last_cmd_flag = 1;
         }
 
-        /* SEND COMMAND HERE */
         fw_update_data_t cmd_data;
         if (last_cmd_flag)
             cmd_data.target = 0x82;
@@ -616,12 +615,11 @@ static int do_bic_update(uint8_t *buff, uint32_t buff_len)
         msg_out.netfn = FW_UPDATE_NETFN << 2;
         msg_out.cmd = FW_UPDATE_CMD;
         msg_out.data_len = msg_len+7;
-        memcpy(msg_out.data, &cmd_data, msg_len+7); /* todo */
+        memcpy(msg_out.data, &cmd_data, msg_len+7);
 
         if (DEBUG_LOG >= 1) {
             log_print(LOG_DBG, "section_idx[%d] section_offset[0x%x/0x%x] image_offset[0x%x]\n",
                    section_idx, section_offset, SECTOR_SZ_64K, cur_msg_offset);
-            /* custom print for each command */
             log_print(LOG_NON, "        target[0x%x] offset[0x%x] size[%d]\n",
                     msg_out.data[0],
                     msg_out.data[1]|(msg_out.data[2] << 8)|(msg_out.data[3] << 16)|(msg_out.data[4] << 24),
@@ -725,8 +723,8 @@ int main(int argc, const char** argv)
 {
     const char* filename = argv[0] + 2; // Skip "./" to get the executable name.
     if (!check_process_active(filename)){
-        printf("BIC update tool is processing.\n");
-        return 1;
+        log_print(LOG_WRN, "BIC update tool is processing.\n");
+        return 0;
     }
 
     HEADER_PRINT();
