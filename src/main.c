@@ -253,6 +253,12 @@ static void log_record(char *file_path, char *content, int init_flag)
 */
 static int str_is_number(const char* str)
 {
+    if (str == NULL)
+    {
+        printf("%d: %s invalid argument\n",__LINE__, __FUNCTION__);
+        exit(EXIT_FAILURE);
+    }
+
     for (int i = 0; str[i] != '\0'; i++)
     {
         if (!isdigit(str[i]))
