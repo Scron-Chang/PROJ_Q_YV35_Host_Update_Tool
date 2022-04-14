@@ -311,6 +311,7 @@ ending:
 static int send_recv_command(ipmi_ctx_t ipmi_ctx, ipmi_cmd_t *msg)
 {
     int ret = -1;
+    int ipmi_data_len = msg->data_len;
     if (!ipmi_ctx || !msg) {
         log_print(LOG_ERR, "%s: Get empty inputs!\n", __func__);
         return -1;
@@ -335,15 +336,15 @@ static int send_recv_command(ipmi_ctx_t ipmi_ctx, ipmi_cmd_t *msg)
     int oem_flag = 0;
 
     if ( (msg->netfn >> 2) == OEM_36 || (msg->netfn >> 2) == OEM_38) {
-        msg->data_len += 3;
-        if (msg->data_len > MAX_IPMB_SIZE)
+        ipmi_data_len += 3;
+        if (ipmi_data_len > MAX_IPMB_SIZE)
             return -1;
         oem_flag = 1;
     }
 
     uint8_t *ipmi_data;
     int init_idx = 0;
-    ipmi_data = (uint8_t*)malloc(msg->data_len + 1);// Insert one byte from the head.
+    ipmi_data = (uint8_t*)malloc(++ipmi_data_len);// Insert one byte from the head.
     if (!ipmi_data) {
         log_print(LOG_ERR, "%s: ipmi_data malloc failed!\n", __func__);
         return -1;
@@ -371,7 +372,7 @@ static int send_recv_command(ipmi_ctx_t ipmi_ctx, ipmi_cmd_t *msg)
         msg->netfn & 0x03,
         msg->netfn >> 2,
         ipmi_data, //byte #0 = cmd
-        msg->data_len + 1, // Add 1 because the cmd is combined with the data buf.
+        ipmi_data_len, // Add 1 because the cmd is combined with the data buf.
         bytes_rs,
         IPMI_RAW_MAX_ARGS
     );
@@ -397,6 +398,8 @@ static int send_recv_command(ipmi_ctx_t ipmi_ctx, ipmi_cmd_t *msg)
 ending:
     if (ipmi_data)
         free(ipmi_data);
+    if (bytes_rs)
+        free(bytes_rs);
 
     return ret;
 }
@@ -413,6 +416,8 @@ ending:
 */
 static int do_bic_update(uint8_t *buff, uint32_t buff_len)
 {
+    int ret = 1;
+
     if (!buff) {
         log_print(LOG_ERR, "%s: Get empty inputs!\n", __func__);
         return 1;
@@ -429,13 +434,13 @@ static int do_bic_update(uint8_t *buff, uint32_t buff_len)
     if (!(ipmi_ctx->io.inband.openipmi_ctx = ipmi_openipmi_ctx_create ()))
     {
         log_print(LOG_ERR, "%s: !(ipmi_ctx->io.inband.openipmi_ctx = ipmi_openipmi_ctx_create ())\n", __func__);
-        return 1;
+        goto clean;
     }
 
     if (ipmi_openipmi_ctx_io_init (ipmi_ctx->io.inband.openipmi_ctx) < 0)
     {
         log_print(LOG_ERR, "%s: ipmi_openipmi_ctx_io_init (ctx->io.inband.openipmi_ctx) < 0\n", __func__);
-        return 1;
+        goto clean;
     }
 
     uint32_t cur_msg_offset = 0;
@@ -513,7 +518,7 @@ static int do_bic_update(uint8_t *buff, uint32_t buff_len)
                 log_print(LOG_WRN, "Given update offset not mach with previous record!\n");
                 log_print(LOG_NON, "         Retry in few seconds...\n");
             }
-            return 1;
+            goto clean;
         }
 
         cur_msg_offset += msg_len;
@@ -523,8 +528,12 @@ static int do_bic_update(uint8_t *buff, uint32_t buff_len)
         if (cur_msg_offset == (SECTOR_SZ_64K + 1000))
             break;
     }
+    ret = 0;
 
-    return 0;
+clean:
+    ipmi_ctx_close (ipmi_ctx);
+    ipmi_ctx_destroy (ipmi_ctx);
+    return ret;
 }
 
 /*
