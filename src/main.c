@@ -1,12 +1,15 @@
 #include <ctype.h>
 #include <dirent.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <stdarg.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <errno.h>
 
 #include <freeipmi/api/ipmi-api.h>
 #include <freeipmi/driver/ipmi-openipmi-driver.h>
@@ -115,17 +118,19 @@ typedef enum
     LOG_NON = 0xff
 }LOG_TAG;
 
+const char* plock_file_path = "/var/run/BIC_FW_updating";
+
 /* Function declare */
 static void log_print(LOG_TAG level, const char *va_alist, ...);
 static void datetime_get(char *psDateTime);
 static void log_record(char *file_path, char *content, int init_flag);
-static int str_is_number(const char* str);
-static int find_exe_by_pid(int pid, char *target_exe_path);
-static int check_process_active(const char* filename);
 static uint32_t read_binary(const char *bin_path, uint8_t *buff, uint32_t buff_len);
 static int send_recv_command(ipmi_ctx_t ipmi_ctx, ipmi_cmd_t *msg);
 static int do_bic_update(uint8_t *buff, uint32_t buff_len);
 static int fw_update(fw_type_t flag, uint8_t *buff, uint32_t buff_len);
+static int init_process_lock_file(void);
+static int lock_plock_file(int fd);
+static int unlock_plock_file(int fd);
 
 /*
   - Name: log_print
@@ -239,134 +244,6 @@ static void log_record(char *file_path, char *content, int init_flag)
     fclose(ptr);
 
     return;
-}
-
-/*
-  - Name: str_is_number
-  - Description: Whether string is a number
-  - Input:
-      * str: The str will be checked to whether it contains a non-numeric
-      * character.
-  - Return:
-      * 1, if the str only consists of numeric characters
-      * 0, otherwise.
-*/
-static int str_is_number(const char* str)
-{
-    for (int i = 0; str[i] != '\0'; i++)
-    {
-        if (!isdigit(str[i]))
-        {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-/*
-  - Name: find_exe_by_pid
-  - Description: Find running exe by pid
-  - Input:
-      * pid: The process Id of an executable to be found.
-      * target_exe_path: If the executable of the input pid is found, this
-      * parameter will have the path.
-  - Return:
-      * -1, if the input parameter is invalid or the executable is not found.
-      * 0, if the executable is found successfully.
-*/
-static int find_exe_by_pid(int pid, char *target_exe_path)
-{
-    char *proc_exe_path = NULL;
-    struct stat exe_stat;
-    int buf_size, len;
-    int ret = -1;
-
-    if (!pid)
-    {
-        return ret;
-    }
-
-    if ((len = asprintf(&proc_exe_path, "/proc/%d/exe", pid)) == -1)
-    {
-        log_print(LOG_ERR, "%s: asprintf failed, pid: %d\n", __func__, pid);
-        exit(EXIT_FAILURE);
-    }
-
-    // Use the lstat to check whether the exe file exists.
-    if (!lstat(proc_exe_path, &exe_stat))
-    {
-        buf_size = exe_stat.st_size + 1;
-        if (!exe_stat.st_size)
-        {
-            buf_size = PATH_MAX;
-        }
-
-        if ((len = readlink(proc_exe_path, target_exe_path, buf_size)) > 0)
-        {
-            ret = 0; // Succeed.
-        }
-    }
-
-    free(proc_exe_path);
-    return ret;
-}
-
-/*
-  - Name: check_process_active
-  - Description: Check whether any process is running exe
-  - Input:
-      * filename: Use the filename to search whether there is the same
-      * executable is working.
-  - Return:
-      * 1, if the executable is not found.
-      * 0, otherwise.
-*/
-static int check_process_active(const char* filename)
-{
-    DIR *proc_dir = NULL;
-    struct dirent* proc_dir_info = NULL;
-    char exe_path[PATH_MAX];
-
-    int proc_pid = -1;
-
-    if (!(proc_dir = opendir("/proc")))
-    {
-        log_print(LOG_ERR, "%s: Failed to open /proc\n", __func__);
-        exit(EXIT_FAILURE);
-    }
-
-    while ((proc_dir_info = readdir(proc_dir)) != 0)
-    {
-        if (str_is_number(proc_dir_info->d_name))
-        {
-            continue;
-        }
-
-        if(!(proc_pid = atoi(proc_dir_info->d_name)))
-        {
-            continue;
-        }
-
-        if ( (int)getpid() == proc_pid )
-        {
-            continue;
-        }
-
-        memset(exe_path, 0, sizeof(exe_path));
-        if(find_exe_by_pid(proc_pid, exe_path))
-        {
-            continue;
-        }
-
-        if (!strstr(exe_path, filename))
-        {
-            continue;
-        }
-
-        return 0;
-    }
-
-    return 1;
 }
 
 /*
@@ -703,6 +580,58 @@ static int fw_update(fw_type_t flag, uint8_t *buff, uint32_t buff_len)
     return 0;
 }
 
+/*
+  - Name: init_process_lock_file
+  - Description: Create the plock, a file for checking BIC FW updating.
+  - Input:
+      * N/A
+  - Return:
+      * a file descriptor of the checking file, if no error
+      * -1, if error
+*/
+static int init_process_lock_file(void)
+{
+    return open(plock_file_path, O_RDONLY | O_CREAT);
+}
+
+/*
+  - Name: lock_plock_file
+  - Description: Lock the plock_file.
+  - Input:
+      * fd: The file descriptor of plock.
+  - Return:
+      * 0, if the plock file is locked by this process.
+      * -1, if the plock file is locked by the other process.
+*/
+static int lock_plock_file(int fd)
+{
+    if (fd <= 0)
+    {
+        return -1;
+    }
+
+    return flock(fd, LOCK_EX | LOCK_NB);
+}
+
+/*
+  - Name: unlock_plock_file
+  - Description: Unlock the plock_file.
+  - Input:
+      * fd: The file descriptor of plock.
+  - Return:
+      * 0, if the plock file is unlocked by this process.
+      * -1, if error.
+*/
+static int unlock_plock_file(int fd)
+{
+    if (fd <= 0)
+    {
+        return -1;
+    }
+
+    return flock(fd, LOCK_UN);
+}
+
 void HELP()
 {
     log_print(LOG_NON, "Try: ./host_fw_update <fw_type> <img_path> <log_level>\n");
@@ -724,17 +653,27 @@ void HEADER_PRINT()
 
 int main(int argc, const char** argv)
 {
-    const char* filename = argv[0] + 2; // Skip "./" to get the executable name.
-    if (!check_process_active(filename)){
-        log_print(LOG_WRN, "BIC update tool is processing.\n");
-        return 0;
+    int img_idx = atoi(argv[1]);
+    const char *img_path = argv[2];
+
+    int plock_fd = -1;
+    if ((plock_fd = init_process_lock_file()) == -1)
+    {
+        log_print(LOG_ERR, "Failed to create %s\n: ", plock_file_path, strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+
+    if (lock_plock_file(plock_fd))
+    {
+        log_print(LOG_ERR, "BIC update tool is processing.\n");
+        exit(EXIT_FAILURE);
     }
 
     HEADER_PRINT();
 
     if (argc!=3 && argc!=4) {
         HELP();
-        return 0;
+        goto ending;
     }
 
     if (argc == 4) {
@@ -746,13 +685,10 @@ int main(int argc, const char** argv)
             DEBUG_LOG = 3;
     }
 
-    int img_idx = atoi(argv[1]);
-    const char *img_path = argv[2];
-
     if ( (img_idx >= FW_T_MAX_IDX) || (img_idx < 0) ) {
         log_print(LOG_ERR, "Invalid <fw_type>!\n");
         HELP();
-        return 0;
+        goto ending;
     }
 
     if (!DEBUG_LOG)
@@ -766,7 +702,7 @@ int main(int argc, const char** argv)
     uint8_t *img_buff = malloc(sizeof(uint8_t) * MAX_IMG_LENGTH);
     if (!img_buff) {
         log_print(LOG_ERR, "img_buff malloc failed!\n");
-        return 0;
+        goto ending;
     }
 
     /* STEP1 - Read image */
@@ -796,6 +732,21 @@ int main(int argc, const char** argv)
 ending:
     if (img_buff)
         free(img_buff);
+
+    if (unlock_plock_file(plock_fd))
+    {
+        log_print(LOG_WRN, "Can't unlock %s: %s\n", plock_file_path, strerror(errno));
+    }
+
+    close(plock_fd);
+
+    if (remove(plock_file_path))
+    {
+        log_print(LOG_ERR,
+        "Can't remove %s: %s\n"
+        "Please execute this command: \'rm %s\'\n",
+        plock_file_path, strerror(errno), plock_file_path);
+    }
 
     return 0;
 }
