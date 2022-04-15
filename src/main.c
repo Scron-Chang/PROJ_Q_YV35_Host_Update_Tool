@@ -524,9 +524,6 @@ static int do_bic_update(uint8_t *buff, uint32_t buff_len)
         cur_msg_offset += msg_len;
         cur_buff += msg_len;
         section_offset += msg_len;
-
-        if (cur_msg_offset == (SECTOR_SZ_64K + 1000))
-            break;
     }
     ret = 0;
 
@@ -662,13 +659,14 @@ void HEADER_PRINT()
 
 int main(int argc, const char** argv)
 {
-    int img_idx = atoi(argv[1]);
-    const char *img_path = argv[2];
+    int img_idx = 0;
+    const char *img_path = NULL;
+    uint8_t *img_buff = NULL;
 
     int plock_fd = -1;
     if ((plock_fd = init_process_lock_file()) == -1)
     {
-        log_print(LOG_ERR, "Failed to create %s\n: ", plock_file_path, strerror(errno));
+        log_print(LOG_ERR, "Failed to create %s: %s\n", plock_file_path, strerror(errno));
         exit(EXIT_FAILURE);
     }
 
@@ -694,6 +692,9 @@ int main(int argc, const char** argv)
             DEBUG_LOG = 3;
     }
 
+    img_idx= atoi(argv[1]);
+    img_path = argv[2];
+
     if ( (img_idx >= FW_T_MAX_IDX) || (img_idx < 0) ) {
         log_print(LOG_ERR, "Invalid <fw_type>!\n");
         HELP();
@@ -708,7 +709,7 @@ int main(int argc, const char** argv)
     log_print(LOG_NON, "\n");
     log_print(LOG_INF, "Start [%s] update task with image [%s]\n", IMG_TYPE_LST[img_idx], img_path);
 
-    uint8_t *img_buff = malloc(sizeof(uint8_t) * MAX_IMG_LENGTH);
+    img_buff = malloc(sizeof(uint8_t) * MAX_IMG_LENGTH);
     if (!img_buff) {
         log_print(LOG_ERR, "img_buff malloc failed!\n");
         goto ending;
