@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <errno.h>
+#include "sha256.h"
 
 #ifdef __UINT8_TYPE__
 typedef __UINT8_TYPE__ uint8_t;
@@ -33,7 +34,7 @@ typedef __UINT32_TYPE__ uint32_t;
 int DEBUG_LOG = 0;
 
 /* Firware update size relative config */
-#define MAX_IMG_LENGTH 0x80000
+#define MAX_IMG_LENGTH 0x2000000
 #define MAX_IPMB_SIZE 244
 #define MAX_IPMB_DATA_SIZE 224
 #define SECTOR_SZ_64K 0x10000
@@ -48,8 +49,8 @@ int DEBUG_LOG = 0;
 /* QUANTA oem command relative config */
 #define OEM_38 0x38
 #define OEM_36 0x36
-#define IANA_1 0x9C
-#define IANA_2 0x9C
+#define IANA_1 0x15
+#define IANA_2 0xA0
 #define IANA_3 0x00
 
 /* IPMI CC(from yv3.5) */
@@ -86,10 +87,11 @@ typedef enum fw_type {
     FW_T_BIC,
     FW_T_BIOS,
     FW_T_CPLD,
+    FW_T_CXL,
     FW_T_MAX_IDX
 } fw_type_t;
 
-char *IMG_TYPE_LST[3] = {"BIC", "BIOS", "CPLD"};
+char *IMG_TYPE_LST[] = {"BIC", "BIOS", "CPLD", "CXL"};
 
 typedef struct fw_update_data {
     uint8_t target;
@@ -305,7 +307,16 @@ ending:
 */
 static int do_bic_update(uint8_t *buff, uint32_t buff_len)
 {
+    printf("Get in %s\n", __func__);
     int ret = 1;
+
+    FILE *fp;
+    char tx_buf[4096] = {0}, rx_buf[4096] = {0};
+    // uint8_t check_sha_buf[65536] = {0};
+    const char bridge_header[] = "bic-util slot1 0xe0 0x02 0x15 0xa0 0x00 0x05 ";
+    size_t tail_of_tx_buf = 0;
+
+    char debug_ptr = NULL;
 
     if (!buff) {
         log_print(LOG_ERR, "%s: Get empty inputs!\n", __func__);
@@ -345,11 +356,29 @@ static int do_bic_update(uint8_t *buff, uint32_t buff_len)
             last_cmd_flag = 1;
         }
 
+        if ((cur_msg_offset + msg_len) > 0){
+            if( (cur_msg_offset + msg_len) % SECTOR_SZ_64K == 0) {
+                msg_len = (SECTOR_SZ_64K - cur_msg_offset);
+                printf(
+                    "cur_msg_offset + msg_len[%d] == SECTOR_SZ_64K\n"
+                    "Change the data length = %d\n"
+                    , cur_msg_offset + msg_len, msg_len);
+                last_cmd_flag = 1;
+            }
+            else
+            {
+                last_cmd_flag = 0;
+            }
+        }
+
         fw_update_data_t cmd_data;
-        if (last_cmd_flag)
-            cmd_data.target = 0x82;
+        // int debug_break = 0;
+        if (last_cmd_flag){
+            cmd_data.target = 0x80 | FW_T_CXL;
+            // debug_break = 1;
+        }
         else
-            cmd_data.target = 0x02;
+            cmd_data.target = FW_T_CXL;
 
         cmd_data.offset[0] = (cur_msg_offset & 0xFF);
         cmd_data.offset[1] = (cur_msg_offset >> 8) & 0xFF;
@@ -358,6 +387,7 @@ static int do_bic_update(uint8_t *buff, uint32_t buff_len)
         cmd_data.length[0] = msg_len & 0xFF;
         cmd_data.length[1] = (msg_len >> 8) & 0xFF;
         memcpy(cmd_data.data, cur_buff, msg_len);
+        // memcpy(&check_sha_buf[cur_msg_offset], cur_buff, msg_len);
 
         if ( percent != (cur_msg_offset+msg_len)*100/buff_len ) {
             percent = (cur_msg_offset+msg_len)*100/buff_len;
@@ -380,9 +410,85 @@ static int do_bic_update(uint8_t *buff, uint32_t buff_len)
                     msg_out.data[5]|(msg_out.data[6] << 8));
         }
 
+        // int resp_cc = send_recv_command(ipmi_ctx, &msg_out);
+
+        // printf("Check msg_uni.msg:\n");
+        // for (size_t i = 0; i < sizeof(ipmi_cmd_t); i++)
+        // {
+        //     printf("%.2X ", msg_uni.buf[i]);
+        // }
+        // printf("\n");
+
+        memset(tx_buf, 0, sizeof(tx_buf));
+        memset(rx_buf, 0, sizeof(rx_buf));
+
+        strncpy(tx_buf, bridge_header, sizeof(bridge_header));
+
+        // Fill the NetFn, Cmd, IANA. The data will process with an for-loop.
+        tail_of_tx_buf = strlen(tx_buf);
+        sprintf(
+            &tx_buf[tail_of_tx_buf],
+            "0x%.2X 0x%.2X 0x%.2X 0x%.2X 0x%.2X ",
+            msg_out.netfn, msg_out.cmd, IANA_1, IANA_2, IANA_3);
+
+        // Fill the fw data
+        for (size_t i = 0; i < msg_out.data_len; i++)
+        {
+            tail_of_tx_buf = strlen(tx_buf);
+            if (tail_of_tx_buf > sizeof(tx_buf))
+            {
+                printf("tx_buf is overflowed, tail_of_tx_buf = %d, sizeof(tx_buf) = %d\n", tail_of_tx_buf, sizeof(tx_buf));
+            }
+
+            sprintf(&tx_buf[tail_of_tx_buf], "0x%.2X ", msg_out.data[i]);
+        }
+        tail_of_tx_buf = strlen(tx_buf);
+        if (tail_of_tx_buf > sizeof(tx_buf))
+        {
+            printf("tx_buf is overflowed\n");
+        }
+        sprintf(&tx_buf[tail_of_tx_buf], "\n%c", '\0');
+
+        // printf(
+        //     "Check tx_buf[%4d]:\n"
+        //     "%s"
+        //     "\nCheck End\n"
+        //     , strlen(tx_buf), tx_buf);
+
+        if ((fp = popen( tx_buf, "r")) == NULL) {
+            printf("Error: %s", strerror(errno));
+            return -1;
+        }
+
+        while(fgets(rx_buf, sizeof(rx_buf), fp) != NULL) {
+            printf("%s\n", rx_buf);
+        }
+
+        pclose(fp);
+
+//Test
+        // if (debug_break == 1)
+        // {
+        //     struct SHA256_CTX ctx;
+        //     uint8_t ans[32] = {0};
+        //     sha256_init(&ctx);
+        //     sha256_update(&ctx, check_sha_buf, sizeof(check_sha_buf));
+        //     sha256_final(&ctx, ans);
+
+        //     for (size_t i = 0; i < 32; i++)
+        //     {
+        //         printf("%.2X", ans[i]);
+        //     }
+        //     printf("\n");
+        //     fgetc(stdin); //system pause.
+
+        //     goto clean;
+        // }
+
         cur_msg_offset += msg_len;
         cur_buff += msg_len;
         section_offset += msg_len;
+        printf("cur_msg_offset: %.8X section_offset: %.8X\n", cur_msg_offset, section_offset);
     }
     ret = 0;
 
@@ -395,14 +501,15 @@ clean:
   - Description: Firmware update controller
   - Input:
       * flag: Image type flag
-      * buff: Buffer to store image bytes
-      * buff_len: Buffer length
+      * buff: The whole image binary data
+      * buff_len: whole image binary data length
   - Return:
       * 0, if no error
       * 1, if error
 */
 static int fw_update(fw_type_t flag, uint8_t *buff, uint32_t buff_len)
 {
+    int retry = 0;
     if (!buff) {
         log_print(LOG_ERR, "%s: Get empty inputs!\n", __func__);
         return 1;
@@ -410,9 +517,7 @@ static int fw_update(fw_type_t flag, uint8_t *buff, uint32_t buff_len)
 
     switch(flag)
     {
-    case FW_T_BIC:
-        ;
-        int retry = 0;
+    case FW_T_CXL:
         while (retry <= IPMI_RAW_RETRY)
         {
             if (retry)
@@ -443,58 +548,6 @@ static int fw_update(fw_type_t flag, uint8_t *buff, uint32_t buff_len)
     return 0;
 }
 
-/*
-  - Name: init_process_lock_file
-  - Description: Create the plock, a file for checking BIC FW updating.
-  - Input:
-      * N/A
-  - Return:
-      * a file descriptor of the checking file, if no error
-      * -1, if error
-*/
-static int init_process_lock_file(void)
-{
-    return open(plock_file_path, O_RDONLY | O_CREAT);
-}
-
-/*
-  - Name: lock_plock_file
-  - Description: Lock the plock_file.
-  - Input:
-      * fd: The file descriptor of plock.
-  - Return:
-      * 0, if the plock file is locked by this process.
-      * -1, if the plock file is locked by the other process.
-*/
-static int lock_plock_file(int fd)
-{
-    if (fd <= 0)
-    {
-        return -1;
-    }
-
-    return flock(fd, LOCK_EX | LOCK_NB);
-}
-
-/*
-  - Name: unlock_plock_file
-  - Description: Unlock the plock_file.
-  - Input:
-      * fd: The file descriptor of plock.
-  - Return:
-      * 0, if the plock file is unlocked by this process.
-      * -1, if error.
-*/
-static int unlock_plock_file(int fd)
-{
-    if (fd <= 0)
-    {
-        return -1;
-    }
-
-    return flock(fd, LOCK_UN);
-}
-
 void HELP()
 {
     log_print(LOG_NON, "Try: ./host_fw_update <fw_type> <img_path> <log_level>\n");
@@ -516,22 +569,25 @@ void HEADER_PRINT()
 
 int main(int argc, const char** argv)
 {
+////TEST
+    // FILE *fp;
+    // char buf[256] = {0};
+
+    // if ((fp = popen("bic-util slot1 0x18 0x01", "r")) == NULL) {
+    //     printf("Error: %s", strerror(errno));
+    //     return -1;
+    // }
+
+    // while(fgets(buf, sizeof(buf), fp) != NULL) {
+    //     printf("%s", buf);
+    // }
+
+    // pclose(fp);
+    // return 0;
+
     int img_idx = 0;
     const char *img_path = NULL;
     uint8_t *img_buff = NULL;
-
-    // int plock_fd = -1;
-    // if ((plock_fd = init_process_lock_file()) == -1)
-    // {
-    //     log_print(LOG_ERR, "Failed to create %s: %s\n", plock_file_path, strerror(errno));
-    //     exit(EXIT_FAILURE);
-    // }
-
-    // if (lock_plock_file(plock_fd))
-    // {
-    //     log_print(LOG_ERR, "BIC update tool is processing.\n");
-    //     exit(EXIT_FAILURE);
-    // }
 
     HEADER_PRINT();
 
@@ -599,13 +655,6 @@ int main(int argc, const char** argv)
 ending:
     if (img_buff)
         free(img_buff);
-
-    // if (unlock_plock_file(plock_fd))
-    // {
-    //     log_print(LOG_WRN, "Can't unlock %s: %s\n", plock_file_path, strerror(errno));
-    // }
-
-    // close(plock_fd);
 
     if (remove(plock_file_path))
     {

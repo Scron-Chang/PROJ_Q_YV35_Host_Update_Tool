@@ -12,7 +12,7 @@ ENDMACRO()
 
 # set ouput folder name
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/output)
-
+add_compile_options(-Wall)
 add_definitions(-D_GNU_SOURCE)
 
 # list code in src
