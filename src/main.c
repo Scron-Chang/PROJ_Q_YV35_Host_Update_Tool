@@ -663,18 +663,18 @@ int main(int argc, const char** argv)
     const char *img_path = NULL;
     uint8_t *img_buff = NULL;
 
-    int plock_fd = -1;
-    if ((plock_fd = init_process_lock_file()) == -1)
-    {
-        log_print(LOG_ERR, "Failed to create %s: %s\n", plock_file_path, strerror(errno));
-        exit(EXIT_FAILURE);
-    }
+    // int plock_fd = -1;
+    // if ((plock_fd = init_process_lock_file()) == -1)
+    // {
+    //     log_print(LOG_ERR, "Failed to create %s: %s\n", plock_file_path, strerror(errno));
+    //     exit(EXIT_FAILURE);
+    // }
 
-    if (lock_plock_file(plock_fd))
-    {
-        log_print(LOG_ERR, "BIC update tool is processing.\n");
-        exit(EXIT_FAILURE);
-    }
+    // if (lock_plock_file(plock_fd))
+    // {
+    //     log_print(LOG_ERR, "BIC update tool is processing.\n");
+    //     exit(EXIT_FAILURE);
+    // }
 
     HEADER_PRINT();
 
@@ -743,12 +743,12 @@ ending:
     if (img_buff)
         free(img_buff);
 
-    if (unlock_plock_file(plock_fd))
-    {
-        log_print(LOG_WRN, "Can't unlock %s: %s\n", plock_file_path, strerror(errno));
-    }
+    // if (unlock_plock_file(plock_fd))
+    // {
+    //     log_print(LOG_WRN, "Can't unlock %s: %s\n", plock_file_path, strerror(errno));
+    // }
 
-    close(plock_fd);
+    // close(plock_fd);
 
     if (remove(plock_file_path))
     {

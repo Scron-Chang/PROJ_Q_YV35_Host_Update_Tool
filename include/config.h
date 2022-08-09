@@ -131,7 +131,7 @@
 #define HAVE_INTTYPES_H 1
 
 /* Define to 1 if you have the `iopl' function. */
-#define HAVE_IOPL 1
+//#define HAVE_IOPL 1
 
 /* Define to 1 if you have the `m' library (-lm). */
 #define HAVE_LIBM 1
@@ -224,7 +224,7 @@
 #define HAVE_STRNDUP 1
 
 /* Define to 1 if you have the <stropts.h> header file. */
-#define HAVE_STROPTS_H 1
+//#define HAVE_STROPTS_H 1
 
 /* Define to 1 if you have the `strsep' function. */
 #define HAVE_STRSEP 1
@@ -251,7 +251,7 @@
 #define HAVE_SYS_STAT_H 1
 
 /* Define to 1 if you have the <sys/stropts.h> header file. */
-#define HAVE_SYS_STROPTS_H 1
+//#define HAVE_SYS_STROPTS_H 1
 
 /* Define to 1 if you have the <sys/types.h> header file. */
 #define HAVE_SYS_TYPES_H 1
