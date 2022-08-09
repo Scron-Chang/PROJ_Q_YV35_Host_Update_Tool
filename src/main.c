@@ -37,10 +37,10 @@ typedef __UINT32_TYPE__ uint32_t;
 int DEBUG_LOG = 0;
 
 /* Firware update size relative config */
-#define MAX_IMG_LENGTH 0x80000
+#define MAX_IMG_LENGTH 0x2000000
 #define MAX_IPMB_SIZE 244
 #define MAX_IPMB_DATA_SIZE 224
-#define SECTOR_SZ_64K 0x10000
+#define SECTOR_SZ_32M 0x2000000
 
 /* Firware update command relative config(using ipmi-raw) */
 #define FW_UPDATE_NETFN 0x38
@@ -52,8 +52,8 @@ int DEBUG_LOG = 0;
 /* QUANTA oem command relative config */
 #define OEM_38 0x38
 #define OEM_36 0x36
-#define IANA_1 0x9C
-#define IANA_2 0x9C
+#define IANA_1 0x15
+#define IANA_2 0xA0
 #define IANA_3 0x00
 
 /* IPMI CC(from yv3.5) */
@@ -90,10 +90,11 @@ typedef enum fw_type {
     FW_T_BIC,
     FW_T_BIOS,
     FW_T_CPLD,
+    FW_T_CXL,
     FW_T_MAX_IDX
 } fw_type_t;
 
-char *IMG_TYPE_LST[3] = {"BIC", "BIOS", "CPLD"};
+char *IMG_TYPE_LST[3] = {"BIC", "BIOS", "CPLD", "CXL"};
 
 typedef struct fw_update_data {
     uint8_t target;
@@ -108,6 +109,13 @@ typedef struct ipmi_cmd {
     uint8_t data[MAX_IPMB_SIZE];
     uint32_t data_len;
 }ipmi_cmd_t;
+
+union ipmi_cmd_uni
+{
+    ipmi_cmd_t msg;
+    char buf[sizeof(ipmi_cmd_t)];
+};
+
 
 typedef enum
 {
@@ -418,30 +426,36 @@ static int do_bic_update(uint8_t *buff, uint32_t buff_len)
 {
     int ret = 1;
 
+    FILE *fp;
+    char tx_buf[4096] = {0}, rx_buf[4096] = {0};
+    int tail_of_tx_buf = 0;
+    union ipmi_cmd_uni msg_uni;
+    char debug_ptr = NULL;
+
     if (!buff) {
         log_print(LOG_ERR, "%s: Get empty inputs!\n", __func__);
         return 1;
     }
 
-    ipmi_ctx_t ipmi_ctx = ipmi_ctx_create();
-    if (ipmi_ctx == NULL)
-    {
-        log_print(LOG_ERR, "%s: ipmi_ctx_create error\n", __func__);
-        return 1;
-    }
+    // ipmi_ctx_t ipmi_ctx = ipmi_ctx_create();
+    // if (ipmi_ctx == NULL)
+    // {
+    //     log_print(LOG_ERR, "%s: ipmi_ctx_create error\n", __func__);
+    //     return 1;
+    // }
 
-    ipmi_ctx->type = IPMI_DEVICE_OPENIPMI;
-    if (!(ipmi_ctx->io.inband.openipmi_ctx = ipmi_openipmi_ctx_create ()))
-    {
-        log_print(LOG_ERR, "%s: !(ipmi_ctx->io.inband.openipmi_ctx = ipmi_openipmi_ctx_create ())\n", __func__);
-        goto clean;
-    }
+    // ipmi_ctx->type = IPMI_DEVICE_OPENIPMI;
+    // if (!(ipmi_ctx->io.inband.openipmi_ctx = ipmi_openipmi_ctx_create ()))
+    // {
+    //     log_print(LOG_ERR, "%s: !(ipmi_ctx->io.inband.openipmi_ctx = ipmi_openipmi_ctx_create ())\n", __func__);
+    //     goto clean;
+    // }
 
-    if (ipmi_openipmi_ctx_io_init (ipmi_ctx->io.inband.openipmi_ctx) < 0)
-    {
-        log_print(LOG_ERR, "%s: ipmi_openipmi_ctx_io_init (ctx->io.inband.openipmi_ctx) < 0\n", __func__);
-        goto clean;
-    }
+    // if (ipmi_openipmi_ctx_io_init (ipmi_ctx->io.inband.openipmi_ctx) < 0)
+    // {
+    //     log_print(LOG_ERR, "%s: ipmi_openipmi_ctx_io_init (ctx->io.inband.openipmi_ctx) < 0\n", __func__);
+    //     goto clean;
+    // }
 
     uint32_t cur_msg_offset = 0;
     uint8_t *cur_buff = buff;
@@ -459,14 +473,14 @@ static int do_bic_update(uint8_t *buff, uint32_t buff_len)
     }
 
     while(cur_msg_offset < buff_len) {
-        if (section_offset == SECTOR_SZ_64K) {
+        if (section_offset == SECTOR_SZ_32M) {
             section_offset = 0;
             section_idx++;
         }
 
         /* If current size over 64K */
-        if ( (section_offset + MAX_IPMB_DATA_SIZE) / SECTOR_SZ_64K )
-            msg_len = (SECTOR_SZ_64K - section_offset);
+        if ( (section_offset + MAX_IPMB_DATA_SIZE) / SECTOR_SZ_32M )
+            msg_len = (SECTOR_SZ_32M - section_offset);
         else
             msg_len = MAX_IPMB_DATA_SIZE;
 
@@ -478,9 +492,9 @@ static int do_bic_update(uint8_t *buff, uint32_t buff_len)
 
         fw_update_data_t cmd_data;
         if (last_cmd_flag)
-            cmd_data.target = 0x82;
+            cmd_data.target = 0x80 | FW_T_CXL;
         else
-            cmd_data.target = 0x02;
+            cmd_data.target = FW_T_CXL;
 
         cmd_data.offset[0] = (cur_msg_offset & 0xFF);
         cmd_data.offset[1] = (cur_msg_offset >> 8) & 0xFF;
@@ -504,20 +518,54 @@ static int do_bic_update(uint8_t *buff, uint32_t buff_len)
 
         if (DEBUG_LOG >= 1) {
             log_print(LOG_DBG, "section_idx[%d] section_offset[0x%x/0x%x] image_offset[0x%x]\n",
-                   section_idx, section_offset, SECTOR_SZ_64K, cur_msg_offset);
+                   section_idx, section_offset, SECTOR_SZ_32M, cur_msg_offset);
             log_print(LOG_NON, "        target[0x%x] offset[0x%x] size[%d]\n",
                     msg_out.data[0],
                     msg_out.data[1]|(msg_out.data[2] << 8)|(msg_out.data[3] << 16)|(msg_out.data[4] << 24),
                     msg_out.data[5]|(msg_out.data[6] << 8));
         }
 
-        int resp_cc = send_recv_command(ipmi_ctx, &msg_out);
-        if (resp_cc) {
-            /* to handle unexpected user interrupt-behavior last time */
-            if (resp_cc == CC_INVALID_DATA_FIELD) {
-                log_print(LOG_WRN, "Given update offset not mach with previous record!\n");
-                log_print(LOG_NON, "         Retry in few seconds...\n");
+        // int resp_cc = send_recv_command(ipmi_ctx, &msg_out);
+        memcpy(&msg_uni.msg, &msg_out, sizeof(ipmi_cmd_t));
+
+        memset(tx_buf, 0, sizeof(tx_buf));
+        memset(rx_buf, 0, sizeof(rx_buf));
+
+        strcpy(tx_buf, "bic-util slot1 0xe0 0x02 0x15 0xa0 0x00 0x05 ");
+
+        for (size_t i = 0; i < sizeof(ipmi_cmd_t); i++)
+        {
+            tail_of_tx_buf = strlen(tx_buf);
+            if (tail_of_tx_buf > sizeof(ipmi_cmd_t))
+            {
+                printf("tx_buf is overflowed\n");
             }
+
+            sprintf(&tx_buf[tail_of_tx_buf], "0x%2d ", msg_uni.buf[i]);
+        }
+        tail_of_tx_buf = strlen(tx_buf);
+        if (tail_of_tx_buf > sizeof(ipmi_cmd_t))
+        {
+            printf("tx_buf is overflowed\n");
+        }
+        sprintf(&tx_buf[tail_of_tx_buf], "\n\0");
+
+        if ((fp = popen( tx_buf, "r")) == NULL) {
+            printf("Error: %s", strerror(errno));
+            return -1;
+        }
+
+        while(fgets(rx_buf, sizeof(rx_buf), fp) != NULL) {
+            for (size_t i = 0; i < 7; i++)
+            {
+                printf("%s ", debug_ptr = strtok(rx_buf, " "));
+            }
+        }
+
+        pclose(fp);
+        if (strcmp(debug_ptr, "00")) {
+            log_print(LOG_WRN, "Given update offset not mach with previous record!\n");
+            log_print(LOG_NON, "         Retry in few seconds...\n");
             goto clean;
         }
 
@@ -538,8 +586,8 @@ clean:
   - Description: Firmware update controller
   - Input:
       * flag: Image type flag
-      * buff: Buffer to store image bytes
-      * buff_len: Buffer length
+      * buff: The whole image binary data
+      * buff_len: whole image binary data length
   - Return:
       * 0, if no error
       * 1, if error
@@ -553,8 +601,7 @@ static int fw_update(fw_type_t flag, uint8_t *buff, uint32_t buff_len)
 
     switch(flag)
     {
-    case FW_T_BIC:
-        ;
+    case FW_T_CXL:
         int retry = 0;
         while (retry <= IPMI_RAW_RETRY)
         {
@@ -586,58 +633,6 @@ static int fw_update(fw_type_t flag, uint8_t *buff, uint32_t buff_len)
     return 0;
 }
 
-/*
-  - Name: init_process_lock_file
-  - Description: Create the plock, a file for checking BIC FW updating.
-  - Input:
-      * N/A
-  - Return:
-      * a file descriptor of the checking file, if no error
-      * -1, if error
-*/
-static int init_process_lock_file(void)
-{
-    return open(plock_file_path, O_RDONLY | O_CREAT);
-}
-
-/*
-  - Name: lock_plock_file
-  - Description: Lock the plock_file.
-  - Input:
-      * fd: The file descriptor of plock.
-  - Return:
-      * 0, if the plock file is locked by this process.
-      * -1, if the plock file is locked by the other process.
-*/
-static int lock_plock_file(int fd)
-{
-    if (fd <= 0)
-    {
-        return -1;
-    }
-
-    return flock(fd, LOCK_EX | LOCK_NB);
-}
-
-/*
-  - Name: unlock_plock_file
-  - Description: Unlock the plock_file.
-  - Input:
-      * fd: The file descriptor of plock.
-  - Return:
-      * 0, if the plock file is unlocked by this process.
-      * -1, if error.
-*/
-static int unlock_plock_file(int fd)
-{
-    if (fd <= 0)
-    {
-        return -1;
-    }
-
-    return flock(fd, LOCK_UN);
-}
-
 void HELP()
 {
     log_print(LOG_NON, "Try: ./host_fw_update <fw_type> <img_path> <log_level>\n");
@@ -659,22 +654,25 @@ void HEADER_PRINT()
 
 int main(int argc, const char** argv)
 {
+////TEST
+    // FILE *fp;
+    // char buf[256] = {0};
+
+    // if ((fp = popen("bic-util slot1 0x18 0x01", "r")) == NULL) {
+    //     printf("Error: %s", strerror(errno));
+    //     return -1;
+    // }
+
+    // while(fgets(buf, sizeof(buf), fp) != NULL) {
+    //     printf("%s", buf);
+    // }
+
+    // pclose(fp);
+    // return 0;
+
     int img_idx = 0;
     const char *img_path = NULL;
     uint8_t *img_buff = NULL;
-
-    // int plock_fd = -1;
-    // if ((plock_fd = init_process_lock_file()) == -1)
-    // {
-    //     log_print(LOG_ERR, "Failed to create %s: %s\n", plock_file_path, strerror(errno));
-    //     exit(EXIT_FAILURE);
-    // }
-
-    // if (lock_plock_file(plock_fd))
-    // {
-    //     log_print(LOG_ERR, "BIC update tool is processing.\n");
-    //     exit(EXIT_FAILURE);
-    // }
 
     HEADER_PRINT();
 
@@ -742,13 +740,6 @@ int main(int argc, const char** argv)
 ending:
     if (img_buff)
         free(img_buff);
-
-    // if (unlock_plock_file(plock_fd))
-    // {
-    //     log_print(LOG_WRN, "Can't unlock %s: %s\n", plock_file_path, strerror(errno));
-    // }
-
-    // close(plock_fd);
 
     if (remove(plock_file_path))
     {
