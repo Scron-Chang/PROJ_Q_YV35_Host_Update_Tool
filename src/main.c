@@ -11,10 +11,6 @@
 #include <unistd.h>
 #include <errno.h>
 
-#include <freeipmi/api/ipmi-api.h>
-#include <freeipmi/driver/ipmi-openipmi-driver.h>
-#include "ipmi-api-defs.h"
-
 #ifdef __UINT8_TYPE__
 typedef __UINT8_TYPE__ uint8_t;
 #endif
@@ -125,7 +121,6 @@ static void log_print(LOG_TAG level, const char *va_alist, ...);
 static void datetime_get(char *psDateTime);
 static void log_record(char *file_path, char *content, int init_flag);
 static uint32_t read_binary(const char *bin_path, uint8_t *buff, uint32_t buff_len);
-static int send_recv_command(ipmi_ctx_t ipmi_ctx, ipmi_cmd_t *msg);
 static int do_bic_update(uint8_t *buff, uint32_t buff_len);
 static int fw_update(fw_type_t flag, uint8_t *buff, uint32_t buff_len);
 static int init_process_lock_file(void);
@@ -299,112 +294,6 @@ ending:
 }
 
 /*
-  - Name: send_recv_command
-  - Description: Send and receive message of ipmi-raw
-  - Input:
-      * ipmi_ctx: ipmi-raw session
-      * msg: IPMI package
-  - Return:
-      * Completion code, if no error
-      * -1, if error
-*/
-static int send_recv_command(ipmi_ctx_t ipmi_ctx, ipmi_cmd_t *msg)
-{
-    int ret = -1;
-    int ipmi_data_len = msg->data_len;
-    if (!ipmi_ctx || !msg) {
-        log_print(LOG_ERR, "%s: Get empty inputs!\n", __func__);
-        return -1;
-    }
-
-    if (DEBUG_LOG >= 2) {
-        log_print(LOG_NON, "     * ipmi command     : 0x%x/0x%x\n", msg->netfn, msg->cmd);
-        log_print(LOG_NON, "     * ipmi data length : %d\n", msg->data_len);
-        log_print(LOG_NON, "     * ipmi data        : ");
-
-        /* IPMI data max print limit is 10 */
-        int max_data_print = 10;
-
-        if (msg->data_len <= max_data_print)
-            max_data_print = msg->data_len;
-
-        for (int i=0; i<max_data_print; i++)
-            log_print(LOG_NON, "0x%x ", msg->data[i]);
-        log_print(LOG_NON, "...\n");
-    }
-
-    int oem_flag = 0;
-
-    if ( (msg->netfn >> 2) == OEM_36 || (msg->netfn >> 2) == OEM_38) {
-        ipmi_data_len += 3;
-        if (ipmi_data_len > MAX_IPMB_SIZE)
-            return -1;
-        oem_flag = 1;
-    }
-
-    uint8_t *ipmi_data;
-    int init_idx = 0;
-    ipmi_data = (uint8_t*)malloc(++ipmi_data_len);// Insert one byte from the head.
-    if (!ipmi_data) {
-        log_print(LOG_ERR, "%s: ipmi_data malloc failed!\n", __func__);
-        return -1;
-    }
-    ipmi_data[0] = msg->cmd;// The byte #0 is cmd.
-    init_idx++;
-    if (oem_flag) {
-        ipmi_data[1] = IANA_1;
-        ipmi_data[2] = IANA_2;
-        ipmi_data[3] = IANA_3;
-        init_idx += 3;
-    }
-    memcpy(&ipmi_data[4], msg->data, msg->data_len);
-
-    int rs_len = 0;
-    uint8_t *bytes_rs = NULL;
-    if (!(bytes_rs = calloc (IPMI_RAW_MAX_ARGS, sizeof (uint8_t))))
-    {
-        log_print(LOG_ERR, "%s: bytes_rs calloc failed!\n", __func__);
-        goto ending;
-    }
-
-    rs_len = ipmi_cmd_raw(
-        ipmi_ctx,
-        msg->netfn & 0x03,
-        msg->netfn >> 2,
-        ipmi_data, //byte #0 = cmd
-        ipmi_data_len, // Add 1 because the cmd is combined with the data buf.
-        bytes_rs,
-        IPMI_RAW_MAX_ARGS
-    );
-
-    ret = bytes_rs[1];
-
-    /* Check for ipmi-raw command response */
-    if (bytes_rs[0] != msg->cmd || bytes_rs[1] != CC_SUCCESS)
-    {
-        log_print(LOG_ERR, "%s: ipmi-raw received bad cc 0x%x\n", __func__, bytes_rs[1]);
-        goto ending;
-    }
-
-    /* Check for oem iana */
-    if (oem_flag) {
-        if (bytes_rs[2]!=IANA_1 || bytes_rs[3]!=IANA_2 || bytes_rs[4]!=IANA_3) {
-            log_print(LOG_ERR, "%s: ipmi-raw received invalid IANA\n", __func__);
-            ret = -1;
-            goto ending;
-        }
-    }
-
-ending:
-    if (ipmi_data)
-        free(ipmi_data);
-    if (bytes_rs)
-        free(bytes_rs);
-
-    return ret;
-}
-
-/*
   - Name: do_bic_update
   - Description: BIC update process
   - Input:
@@ -421,26 +310,6 @@ static int do_bic_update(uint8_t *buff, uint32_t buff_len)
     if (!buff) {
         log_print(LOG_ERR, "%s: Get empty inputs!\n", __func__);
         return 1;
-    }
-
-    ipmi_ctx_t ipmi_ctx = ipmi_ctx_create();
-    if (ipmi_ctx == NULL)
-    {
-        log_print(LOG_ERR, "%s: ipmi_ctx_create error\n", __func__);
-        return 1;
-    }
-
-    ipmi_ctx->type = IPMI_DEVICE_OPENIPMI;
-    if (!(ipmi_ctx->io.inband.openipmi_ctx = ipmi_openipmi_ctx_create ()))
-    {
-        log_print(LOG_ERR, "%s: !(ipmi_ctx->io.inband.openipmi_ctx = ipmi_openipmi_ctx_create ())\n", __func__);
-        goto clean;
-    }
-
-    if (ipmi_openipmi_ctx_io_init (ipmi_ctx->io.inband.openipmi_ctx) < 0)
-    {
-        log_print(LOG_ERR, "%s: ipmi_openipmi_ctx_io_init (ctx->io.inband.openipmi_ctx) < 0\n", __func__);
-        goto clean;
     }
 
     uint32_t cur_msg_offset = 0;
@@ -511,16 +380,6 @@ static int do_bic_update(uint8_t *buff, uint32_t buff_len)
                     msg_out.data[5]|(msg_out.data[6] << 8));
         }
 
-        int resp_cc = send_recv_command(ipmi_ctx, &msg_out);
-        if (resp_cc) {
-            /* to handle unexpected user interrupt-behavior last time */
-            if (resp_cc == CC_INVALID_DATA_FIELD) {
-                log_print(LOG_WRN, "Given update offset not mach with previous record!\n");
-                log_print(LOG_NON, "         Retry in few seconds...\n");
-            }
-            goto clean;
-        }
-
         cur_msg_offset += msg_len;
         cur_buff += msg_len;
         section_offset += msg_len;
@@ -528,8 +387,6 @@ static int do_bic_update(uint8_t *buff, uint32_t buff_len)
     ret = 0;
 
 clean:
-    ipmi_ctx_close (ipmi_ctx);
-    ipmi_ctx_destroy (ipmi_ctx);
     return ret;
 }
 
